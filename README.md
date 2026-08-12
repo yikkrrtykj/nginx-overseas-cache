@@ -84,6 +84,56 @@ sudo systemctl reload nginx
 
 ## 更换上游域名
 
+### 使用管理页面（推荐）
+
+仓库现在包含一个仅监听 Ubuntu 本机的管理面板。它可以填写：
+
+- 主站域名；
+- 静态 CDN 域名；
+- `channelId`；
+- `accountId`；
+- 新 token（留空则保持原 token）。
+
+在 Ubuntu 的仓库目录中安装：
+
+```bash
+git pull
+sudo bash scripts/install-admin.sh
+```
+
+安装程序会备份并部署仓库中的最新 Nginx 配置。如果当前 channel/account/token 仍直接写在旧的站点配置中，安装程序会尝试自动迁移到权限为 `0600` 的 `settings.conf`。
+
+安装完成后，它会显示随机生成的管理密码。管理服务只监听 `127.0.0.1:23000`，不会开放给其他内网电脑。在 Windows PowerShell 建立 SSH 隧道：
+
+```powershell
+ssh -L 23000:127.0.0.1:23000 你的SSH用户@192.168.16.23
+```
+
+保持该窗口打开，然后浏览器访问：
+
+```text
+http://127.0.0.1:23000
+```
+
+使用安装程序显示的用户名和密码登录。管理页不会读取并显示原 token；token 输入框留空时会保持服务器上的当前值。每次保存都会自动备份、执行 `nginx -t` 并重新加载，失败会恢复旧配置。
+
+管理面板的服务状态和日志：
+
+```bash
+sudo systemctl status overseas-cache-admin
+sudo journalctl -u overseas-cache-admin -n 100 --no-pager
+```
+
+如果本机端口 23000 已被占用，可以把 PowerShell 命令左侧端口换成其他值，例如：
+
+```powershell
+ssh -L 23001:127.0.0.1:23000 你的SSH用户@192.168.16.23
+```
+
+随后打开 `http://127.0.0.1:23001`。
+
+### 使用命令行脚本
+
 主站域名变化时，不要在多个配置文件里手工查找替换。先把仓库中的脚本放到服务器，例如仓库已经克隆到 `/opt/nginx-overseas-cache`：
 
 ```bash

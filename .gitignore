@@ -14,3 +14,6 @@ logs/
 .DS_Store
 Thumbs.db
 
+# Python bytecode generated while validating the local admin service.
+__pycache__/
+*.py[cod]

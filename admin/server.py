@@ -1,0 +1,486 @@
+#!/usr/bin/env python3
+"""Local-only administration UI for the Nginx overseas cache."""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import binascii
+import fcntl
+import hmac
+import json
+import os
+import re
+import secrets
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import urlsplit
+
+
+UPSTREAM_CONFIG = Path("/etc/nginx/conf.d/proxy-cache.conf")
+SITE_CONFIG = Path("/etc/nginx/sites-available/overseas-cache")
+SETTINGS_CONFIG = Path("/etc/nginx/overseas-cache/settings.conf")
+BACKUP_ROOT = Path("/etc/nginx/overseas-cache/backups")
+LOCK_FILE = Path("/run/overseas-cache-admin.lock")
+STATIC_ROOT = Path(__file__).resolve().parent / "static"
+
+HOST_PATTERN = re.compile(
+    r"(?=.{1,253}\Z)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+"
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z"
+)
+ID_PATTERN = re.compile(r"[A-Za-z0-9._~-]{1,128}\Z")
+TOKEN_PATTERN = re.compile(r"[A-Za-z0-9._~=-]{8,512}\Z")
+SETTING_PATTERN = re.compile(
+    r'^\s*set\s+\$(render_channel|render_account|render_token)\s+"([^"]*)"\s*;\s*$',
+    re.MULTILINE,
+)
+
+
+class AdminError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class CurrentConfig:
+    origin_host: str
+    cdn_host: str
+    channel_id: str
+    account_id: str
+    token: str
+
+
+def run_checked(command: list[str], timeout: int) -> str:
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"},
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AdminError(f"命令执行超时：{' '.join(command)}") from exc
+
+    output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
+    if result.returncode != 0:
+        raise AdminError(output or f"命令执行失败：{' '.join(command)}")
+    return output
+
+
+def read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise AdminError(f"无法读取 {path}") from exc
+
+
+def parse_upstream_host(text: str, group: str) -> str:
+    pattern = re.compile(
+        rf"upstream\s+{re.escape(group)}\s*\{{.*?\bserver\s+([^\s:;]+):443\s*;",
+        re.DOTALL,
+    )
+    match = pattern.search(text)
+    if not match:
+        raise AdminError(f"无法从 Nginx 配置识别 {group}")
+    return match.group(1).lower()
+
+
+def parse_settings(text: str) -> tuple[str, str, str]:
+    values = {name: value for name, value in SETTING_PATTERN.findall(text)}
+    missing = [name for name in ("render_channel", "render_account", "render_token") if not values.get(name)]
+    if missing:
+        raise AdminError("settings.conf 缺少必要参数：" + ", ".join(missing))
+    return values["render_channel"], values["render_account"], values["render_token"]
+
+
+def load_config() -> CurrentConfig:
+    upstream_text = read_text(UPSTREAM_CONFIG)
+    channel, account, token = parse_settings(read_text(SETTINGS_CONFIG))
+    return CurrentConfig(
+        origin_host=parse_upstream_host(upstream_text, "webcoder_origin"),
+        cdn_host=parse_upstream_host(upstream_text, "webcoder_cdn"),
+        channel_id=channel,
+        account_id=account,
+        token=token,
+    )
+
+
+def validate_hostname(value: object, label: str) -> str:
+    if not isinstance(value, str):
+        raise AdminError(f"{label}格式不正确")
+    host = value.strip().lower().rstrip(".")
+    if not HOST_PATTERN.fullmatch(host):
+        raise AdminError(f"{label}只填写域名，不要包含 https://、端口、路径或结尾斜杠")
+    return host
+
+
+def validate_id(value: object, label: str) -> str:
+    if not isinstance(value, str):
+        raise AdminError(f"{label}格式不正确")
+    normalized = value.strip()
+    if not ID_PATTERN.fullmatch(normalized):
+        raise AdminError(f"{label}只能包含字母、数字、点、下划线、波浪号和连字符")
+    return normalized
+
+
+def validate_token(value: object, current_token: str) -> str:
+    if value is None or value == "":
+        return current_token
+    if not isinstance(value, str) or not TOKEN_PATTERN.fullmatch(value.strip()):
+        raise AdminError("token 格式不正确；为避免 URL 注入，只允许 URL 安全字符")
+    return value.strip()
+
+
+def replace_exact(text: str, pattern: re.Pattern[str], replacement: str, label: str) -> str:
+    updated, count = pattern.subn(replacement, text, count=1)
+    if count != 1:
+        raise AdminError(f"无法安全更新 {label}，配置结构与仓库版本不一致")
+    return updated
+
+
+def update_upstream_text(text: str, current: CurrentConfig, origin: str, cdn: str) -> str:
+    groups = (("webcoder_origin", origin), ("webcoder_cdn", cdn))
+    for group, host in groups:
+        pattern = re.compile(
+            rf"(upstream\s+{re.escape(group)}\s*\{{.*?\bserver\s+)[^\s:;]+(:443\s*;)",
+            re.DOTALL,
+        )
+        text = replace_exact(text, pattern, rf"\g<1>{host}\g<2>", f"{group} 地址")
+
+    maps = (("overseas_origin_host", origin), ("overseas_cdn_host", cdn))
+    for variable, host in maps:
+        pattern = re.compile(
+            rf"(map\s+\$host\s+\${re.escape(variable)}\s*\{{\s*default\s+)[^;\s]+(\s*;)",
+            re.DOTALL,
+        )
+        text = replace_exact(text, pattern, rf"\g<1>{host}\g<2>", f"{variable} 变量")
+    return text
+
+
+def render_settings(channel: str, account: str, token: str) -> str:
+    return (
+        "# Managed by the local Overseas Cache administration panel.\n"
+        "# This file contains a sensitive token and must remain mode 0600.\n\n"
+        f'set $render_channel "{channel}";\n'
+        f'set $render_account "{account}";\n'
+        f'set $render_token   "{token}";\n'
+    )
+
+
+def atomic_write(path: Path, content: str, mode: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary_name, mode)
+        os.chown(temporary_name, 0, 0)
+        os.replace(temporary_name, path)
+    finally:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+
+
+def backup_files() -> Path:
+    timestamp = datetime.now(timezone.utc).strftime("admin-%Y%m%dT%H%M%SZ-%f")
+    backup_dir = BACKUP_ROOT / timestamp
+    backup_dir.mkdir(parents=True, mode=0o700)
+    for source in (UPSTREAM_CONFIG, SITE_CONFIG, SETTINGS_CONFIG):
+        shutil.copy2(source, backup_dir / source.name)
+    return backup_dir
+
+
+def restore_backup(backup_dir: Path) -> None:
+    for destination in (UPSTREAM_CONFIG, SITE_CONFIG, SETTINGS_CONFIG):
+        source = backup_dir / destination.name
+        shutil.copy2(source, destination)
+        os.chown(destination, 0, 0)
+    os.chmod(SETTINGS_CONFIG, 0o600)
+
+
+def apply_config(payload: dict[str, object]) -> tuple[CurrentConfig, Path | None, str]:
+    if not isinstance(payload, dict):
+        raise AdminError("请求格式不正确")
+
+    LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with LOCK_FILE.open("a+", encoding="utf-8") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        current = load_config()
+        origin = validate_hostname(payload.get("originHost"), "主站域名")
+        cdn = validate_hostname(payload.get("cdnHost"), "CDN 域名")
+        channel = validate_id(payload.get("channelId"), "channelId")
+        account = validate_id(payload.get("accountId"), "accountId")
+        token = validate_token(payload.get("token"), current.token)
+
+        desired = CurrentConfig(origin, cdn, channel, account, token)
+        if desired == current:
+            return current, None, "配置没有变化"
+
+        backup_dir = backup_files()
+        try:
+            upstream_text = update_upstream_text(
+                read_text(UPSTREAM_CONFIG), current, desired.origin_host, desired.cdn_host
+            )
+            atomic_write(UPSTREAM_CONFIG, upstream_text, 0o644)
+            atomic_write(
+                SETTINGS_CONFIG,
+                render_settings(desired.channel_id, desired.account_id, desired.token),
+                0o600,
+            )
+            validation_output = run_checked(["/usr/sbin/nginx", "-t"], timeout=20)
+            run_checked(["/usr/bin/systemctl", "reload", "nginx"], timeout=30)
+        except Exception as exc:
+            restore_backup(backup_dir)
+            rollback_details = []
+            try:
+                rollback_details.append(run_checked(["/usr/sbin/nginx", "-t"], timeout=20))
+                rollback_details.append(run_checked(["/usr/bin/systemctl", "reload", "nginx"], timeout=30))
+            except Exception as rollback_exc:  # pragma: no cover - catastrophic host failure
+                rollback_details.append(f"恢复后重新加载失败：{rollback_exc}")
+            raise AdminError(f"保存失败，已经恢复旧配置。\n{exc}") from exc
+
+        return desired, backup_dir, validation_output
+
+
+class NonceStore:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._items: dict[str, float] = {}
+
+    def issue(self) -> str:
+        now = time.monotonic()
+        token = secrets.token_urlsafe(32)
+        with self._lock:
+            self._items = {key: expiry for key, expiry in self._items.items() if expiry > now}
+            self._items[token] = now + 600
+        return token
+
+    def consume(self, token: str) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            expiry = self._items.pop(token, 0)
+        return expiry > now
+
+
+NONCES = NonceStore()
+
+
+class AdminHandler(BaseHTTPRequestHandler):
+    server_version = "OverseasCacheAdmin"
+    sys_version = ""
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        sys.stderr.write(f"[{self.log_date_time_string()}] {self.client_address[0]} {fmt % args}\n")
+
+    def _send_headers(self, status: int, content_type: str, length: int) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(length))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self'; style-src 'self'; "
+            "img-src 'self'; connect-src 'self'; base-uri 'none'; "
+            "form-action 'self'; frame-ancestors 'none'",
+        )
+        self.end_headers()
+
+    def send_bytes(self, status: int, content_type: str, body: bytes) -> None:
+        self._send_headers(status, content_type, len(body))
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def send_json(self, status: int, payload: dict[str, object]) -> None:
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        self.send_bytes(status, "application/json; charset=utf-8", body)
+
+    def local_host_is_valid(self) -> bool:
+        host_header = self.headers.get("Host", "")
+        try:
+            parsed = urlsplit(f"//{host_header}")
+            return parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+        except ValueError:
+            return False
+
+    def authorized(self) -> bool:
+        expected_user = os.environ["OVERSEAS_ADMIN_USER"]
+        expected_password = os.environ["OVERSEAS_ADMIN_PASSWORD"]
+        header = self.headers.get("Authorization", "")
+        if not header.startswith("Basic "):
+            return False
+        try:
+            decoded = base64.b64decode(header[6:], validate=True).decode("utf-8")
+            username, password = decoded.split(":", 1)
+        except (ValueError, UnicodeDecodeError, binascii.Error):
+            return False
+        return hmac.compare_digest(username, expected_user) and hmac.compare_digest(
+            password, expected_password
+        )
+
+    def authenticate_request(self) -> bool:
+        if not self.local_host_is_valid():
+            self.send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "message": "管理页只能通过本机或 SSH 隧道访问"})
+            return False
+        if self.authorized():
+            return True
+        body = b"Authentication required"
+        self.send_response(HTTPStatus.UNAUTHORIZED)
+        self.send_header("WWW-Authenticate", 'Basic realm="Overseas Cache Admin", charset="UTF-8"')
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+        return False
+
+    def same_origin_is_valid(self) -> bool:
+        origin = self.headers.get("Origin", "")
+        if not origin:
+            return False
+        try:
+            parsed = urlsplit(origin)
+            host = urlsplit(f"//{self.headers.get('Host', '')}")
+            return (
+                parsed.scheme == "http"
+                and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+                and parsed.hostname == host.hostname
+                and parsed.port == host.port
+            )
+        except ValueError:
+            return False
+
+    def do_GET(self) -> None:  # noqa: N802
+        if not self.authenticate_request():
+            return
+        path = urlsplit(self.path).path
+        if path == "/api/config":
+            try:
+                config = load_config()
+                self.send_json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "csrfToken": NONCES.issue(),
+                        "config": {
+                            "originHost": config.origin_host,
+                            "cdnHost": config.cdn_host,
+                            "channelId": config.channel_id,
+                            "accountId": config.account_id,
+                            "tokenPresent": bool(config.token),
+                        },
+                    },
+                )
+            except AdminError as exc:
+                self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": str(exc)})
+            return
+
+        static_files = {
+            "/": ("index.html", "text/html; charset=utf-8"),
+            "/index.html": ("index.html", "text/html; charset=utf-8"),
+            "/app.css": ("app.css", "text/css; charset=utf-8"),
+            "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+        }
+        selected = static_files.get(path)
+        if not selected:
+            self.send_json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "页面不存在"})
+            return
+        filename, content_type = selected
+        try:
+            body = (STATIC_ROOT / filename).read_bytes()
+        except OSError:
+            self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": "管理页面资源缺失"})
+            return
+        self.send_bytes(HTTPStatus.OK, content_type, body)
+
+    def do_POST(self) -> None:  # noqa: N802
+        if not self.authenticate_request():
+            return
+        if urlsplit(self.path).path != "/api/config":
+            self.send_json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "接口不存在"})
+            return
+        if not self.same_origin_is_valid():
+            self.send_json(HTTPStatus.FORBIDDEN, {"ok": False, "message": "来源检查失败，请重新打开管理页"})
+            return
+        csrf_token = self.headers.get("X-CSRF-Token", "")
+        if not NONCES.consume(csrf_token):
+            self.send_json(HTTPStatus.FORBIDDEN, {"ok": False, "message": "页面已过期，请刷新后重试"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length <= 0 or length > 16_384:
+            self.send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "message": "请求大小不正确"})
+            return
+        try:
+            payload = json.loads(self.rfile.read(length))
+            config, backup_dir, details = apply_config(payload)
+            self.send_json(
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "message": details if not backup_dir else "配置已保存，Nginx 检查通过并已重新加载",
+                    "backup": backup_dir.name if backup_dir else None,
+                    "csrfToken": NONCES.issue(),
+                    "config": {
+                        "originHost": config.origin_host,
+                        "cdnHost": config.cdn_host,
+                        "channelId": config.channel_id,
+                        "accountId": config.account_id,
+                        "tokenPresent": bool(config.token),
+                    },
+                },
+            )
+        except (json.JSONDecodeError, AdminError) as exc:
+            self.send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "message": str(exc), "csrfToken": NONCES.issue()})
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", default=23000, type=int)
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    if os.geteuid() != 0:
+        print("This service must run as root so it can validate and reload Nginx.", file=sys.stderr)
+        return 1
+    username = os.environ.get("OVERSEAS_ADMIN_USER", "")
+    password = os.environ.get("OVERSEAS_ADMIN_PASSWORD", "")
+    if not username or len(password) < 16:
+        print("OVERSEAS_ADMIN_USER and a 16+ character password are required.", file=sys.stderr)
+        return 1
+    server = ThreadingHTTPServer((args.host, args.port), AdminHandler)
+    server.daemon_threads = True
+    print(f"Overseas Cache Admin listening on http://{args.host}:{args.port}", flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

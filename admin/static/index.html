@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Overseas Cache Console</title>
+    <meta name="description" content="内网海外页面代理的本地管理面板">
+    <link rel="stylesheet" href="/app.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="masthead">
+        <div>
+          <p class="eyebrow">NGINX · LOCAL CONTROL PLANE</p>
+          <h1>Overseas Cache<br><span>Console</span></h1>
+          <p class="lede">统一管理上游域名、频道参数与访问令牌。每次保存都会先备份并检查 Nginx，只有验证通过才会生效。</p>
+        </div>
+        <div class="health" aria-label="服务状态">
+          <span class="pulse"></span>
+          <div><strong>本地安全连接</strong><small>仅通过 SSH 隧道访问</small></div>
+        </div>
+      </header>
+
+      <section class="workspace" aria-labelledby="config-title">
+        <div class="section-heading">
+          <div>
+            <p class="section-number">01 / CONFIGURATION</p>
+            <h2 id="config-title">代理配置</h2>
+          </div>
+          <button class="quiet-button" id="reloadButton" type="button">重新读取</button>
+        </div>
+
+        <form id="configForm" autocomplete="off">
+          <fieldset>
+            <legend>上游服务</legend>
+            <div class="field-grid">
+              <label class="field">
+                <span>主站域名</span>
+                <input id="originHost" name="originHost" type="text" inputmode="url" spellcheck="false" required placeholder="api.example.com">
+                <small>页面、API 与 WebSocket 的来源</small>
+              </label>
+              <label class="field">
+                <span>静态 CDN 域名</span>
+                <input id="cdnHost" name="cdnHost" type="text" inputmode="url" spellcheck="false" required placeholder="cdn.example.com">
+                <small>字体、图片和模板资源的来源</small>
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>渲染入口</legend>
+            <div class="field-grid">
+              <label class="field">
+                <span>channelId</span>
+                <input id="channelId" name="channelId" type="text" spellcheck="false" required>
+                <small>频道标识，例如 pgs26_p</small>
+              </label>
+              <label class="field">
+                <span>accountId</span>
+                <input id="accountId" name="accountId" type="text" spellcheck="false" required>
+                <small>频道所属账户标识</small>
+              </label>
+              <label class="field field-wide">
+                <span>新 token</span>
+                <div class="token-control">
+                  <input id="token" name="token" type="password" spellcheck="false" autocomplete="new-password" placeholder="留空表示保持当前 token 不变">
+                  <button id="toggleToken" type="button" aria-label="显示或隐藏 token">显示</button>
+                </div>
+                <small id="tokenHint">服务器上已有 token；为了安全，管理页不会读取并显示原值。</small>
+              </label>
+            </div>
+          </fieldset>
+
+          <div class="preview-card">
+            <p>内网访问入口</p>
+            <code>http://服务器IP:23333/</code>
+            <span>保存后，64 台内网电脑继续使用同一个地址。</span>
+          </div>
+
+          <div class="action-row">
+            <p><strong>事务式保存</strong><br>自动备份 → 检查配置 → 重新加载；失败自动恢复。</p>
+            <button class="primary-button" id="saveButton" type="submit">
+              <span>保存并应用</span><i aria-hidden="true">→</i>
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <section class="status-panel" aria-live="polite">
+        <div class="status-icon" id="statusIcon">i</div>
+        <div><strong id="statusTitle">正在读取服务器配置</strong><p id="statusMessage">请稍候，当前 token 不会传到浏览器。</p></div>
+      </section>
+    </main>
+
+    <dialog id="confirmDialog">
+      <form method="dialog" class="dialog-card">
+        <p class="section-number">CONFIRM CHANGE</p>
+        <h2>确认应用这些配置？</h2>
+        <div id="changeSummary" class="change-summary"></div>
+        <p class="dialog-note">保存时连接可能短暂重载，但 WebSocket 会由浏览器自动重新连接。</p>
+        <div class="dialog-actions">
+          <button value="cancel" class="quiet-button">返回修改</button>
+          <button value="confirm" class="primary-button">确认应用</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>
+
