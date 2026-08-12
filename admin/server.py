@@ -7,24 +7,29 @@ import argparse
 import fcntl
 import hashlib
 import hmac
+import http.client
 import ipaddress
 import json
 import os
 import re
 import secrets
 import shutil
+import socket
+import ssl
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import zlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urljoin, urlsplit, urlunsplit
 
 
 UPSTREAM_CONFIG = Path("/etc/nginx/conf.d/proxy-cache.conf")
@@ -57,6 +62,30 @@ PASSWORD_ITERATIONS = 600_000
 SESSION_COOKIE = "overseas_admin_session"
 SESSION_TTL = 8 * 60 * 60
 PASSWORD_LOCK = threading.Lock()
+DISCOVERY_LIMIT = threading.BoundedSemaphore(2)
+DISCOVERY_MAX_DOCUMENT = 2 * 1024 * 1024
+DISCOVERY_MAX_ASSETS = 10
+DISCOVERY_MAX_TOTAL = 6 * 1024 * 1024
+DISCOVERY_URL_PATTERN = re.compile(r"(?:(?:https?:)?//)[^\s\"'<>\\)]+", re.IGNORECASE)
+RESOURCE_EXTENSIONS = {
+    ".css": "样式",
+    ".js": "脚本",
+    ".json": "数据",
+    ".otf": "字体",
+    ".ttf": "字体",
+    ".woff": "字体",
+    ".woff2": "字体",
+    ".png": "图片",
+    ".jpg": "图片",
+    ".jpeg": "图片",
+    ".gif": "图片",
+    ".webp": "图片",
+    ".svg": "图片",
+    ".ico": "图片",
+    ".mp4": "媒体",
+    ".webm": "媒体",
+    ".m3u8": "媒体",
+}
 
 
 class AdminError(RuntimeError):
@@ -70,6 +99,465 @@ class CurrentConfig:
     channel_id: str
     account_id: str
     token: str
+
+
+@dataclass(frozen=True)
+class DiscoveryFetch:
+    url: str
+    status: int
+    content_type: str
+    body: bytes
+
+
+class ResourceHTMLParser(HTMLParser):
+    RESOURCE_ATTRIBUTES = {
+        "script": ("src",),
+        "link": ("href",),
+        "img": ("src", "srcset", "data-src"),
+        "source": ("src", "srcset"),
+        "video": ("src", "poster"),
+        "audio": ("src",),
+        "iframe": ("src",),
+        "object": ("data",),
+    }
+
+    def __init__(self, base_url: str) -> None:
+        super().__init__(convert_charrefs=True)
+        self.base_url = base_url
+        self.urls: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = {name.lower(): value for name, value in attrs if value}
+        if tag.lower() == "base" and values.get("href"):
+            self.base_url = urljoin(self.base_url, values["href"])
+        for name in self.RESOURCE_ATTRIBUTES.get(tag.lower(), ()):
+            value = values.get(name)
+            if not value:
+                continue
+            if name == "srcset":
+                for candidate in value.split(","):
+                    self.urls.append(urljoin(self.base_url, candidate.strip().split()[0]))
+            else:
+                self.urls.append(urljoin(self.base_url, value.strip()))
+
+
+def normalize_discovery_url(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise AdminError(f"请填写{label}")
+    text = value.strip()
+    match = re.search(r"https://[^\s\"'<>]+", text, re.IGNORECASE)
+    if not match:
+        raise AdminError(f"{label}必须是完整的 https:// 地址")
+    candidate = match.group(0).rstrip(".,;)]}")
+    try:
+        parsed = urlsplit(candidate)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise AdminError(f"{label}格式不正确") from exc
+    if (
+        parsed.scheme.lower() != "https"
+        or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in (None, 443)
+    ):
+        raise AdminError(f"{label}只允许标准 HTTPS 公网地址")
+    try:
+        ascii_host = hostname.encode("idna").decode("ascii").lower().rstrip(".")
+    except UnicodeError as exc:
+        raise AdminError(f"{label}域名格式不正确") from exc
+    try:
+        ipaddress.ip_address(ascii_host)
+    except ValueError:
+        pass
+    else:
+        raise AdminError(f"{label}必须使用公网域名，不能直接填写 IP 地址")
+    if not HOST_PATTERN.fullmatch(ascii_host):
+        raise AdminError(f"{label}必须使用有效的公网域名")
+    path = parsed.path or "/"
+    return urlunsplit(("https", ascii_host, path, parsed.query, ""))
+
+
+def resolve_public_addresses(hostname: str, port: int = 443) -> tuple[str, ...]:
+    try:
+        answers = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+    except OSError as exc:
+        raise AdminError(f"无法解析域名：{hostname}") from exc
+    addresses: list[str] = []
+    for answer in answers:
+        value = answer[4][0].split("%", 1)[0]
+        if value not in addresses:
+            addresses.append(value)
+    if not addresses:
+        raise AdminError(f"域名没有可用地址：{hostname}")
+    for value in addresses:
+        try:
+            address = ipaddress.ip_address(value)
+        except ValueError as exc:
+            raise AdminError(f"域名返回了无效地址：{hostname}") from exc
+        if not address.is_global:
+            raise AdminError(f"为保护内网，禁止扫描解析到私有或保留地址的域名：{hostname}")
+    addresses.sort(key=lambda value: 0 if ipaddress.ip_address(value).version == 4 else 1)
+    return tuple(addresses)
+
+
+def decode_discovery_body(body: bytes, content_encoding: str, maximum: int) -> bytes:
+    encoding = content_encoding.lower().strip()
+    try:
+        if encoding == "gzip":
+            return zlib.decompressobj(16 + zlib.MAX_WBITS).decompress(body, maximum)
+        if encoding == "deflate":
+            return zlib.decompressobj().decompress(body, maximum)
+    except zlib.error:
+        return b""
+    return body[:maximum]
+
+
+def fetch_public_url(url: str, maximum: int = DISCOVERY_MAX_DOCUMENT) -> DiscoveryFetch:
+    current = normalize_discovery_url(url, "扫描地址")
+    for _redirect in range(5):
+        parsed = urlsplit(current)
+        hostname = parsed.hostname or ""
+        path = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
+        last_error: Exception | None = None
+        for address in resolve_public_addresses(hostname):
+            connection = http.client.HTTPConnection(hostname, 443, timeout=10)
+            raw_socket: socket.socket | None = None
+            try:
+                raw_socket = socket.create_connection((address, 443), timeout=8)
+                connection.sock = ssl.create_default_context().wrap_socket(
+                    raw_socket, server_hostname=hostname
+                )
+                raw_socket = None
+                connection.request(
+                    "GET",
+                    path,
+                    headers={
+                        "Host": hostname,
+                        "User-Agent": "OverseasCacheDiscovery/1.0",
+                        "Accept": "text/html,text/css,application/javascript,application/json,*/*;q=0.5",
+                        "Accept-Encoding": "identity",
+                        "Range": f"bytes=0-{maximum - 1}",
+                        "Connection": "close",
+                    },
+                )
+                response = connection.getresponse()
+                body = response.read(maximum + 1)
+                status = response.status
+                content_type = response.getheader("Content-Type", "").split(";", 1)[0].lower()
+                content_encoding = response.getheader("Content-Encoding", "")
+                location = response.getheader("Location", "")
+                body = decode_discovery_body(body, content_encoding, maximum)
+                connection.close()
+                break
+            except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
+                last_error = exc
+                if raw_socket is not None:
+                    raw_socket.close()
+                connection.close()
+        else:
+            raise AdminError(f"服务器无法连接到：{hostname}") from last_error
+        if status in {301, 302, 303, 307, 308}:
+            if not location:
+                raise AdminError(f"上游返回了无目标地址的跳转：{hostname}")
+            current = normalize_discovery_url(urljoin(current, location), "跳转地址")
+            continue
+        return DiscoveryFetch(current, status, content_type, body)
+    raise AdminError("网页跳转次数过多，已停止扫描")
+
+
+def classify_resource(url: str, content_type: str = "") -> tuple[str, int]:
+    mime = content_type.lower()
+    path = urlsplit(url).path.lower()
+    if "font" in mime or any(path.endswith(extension) for extension in (".otf", ".ttf", ".woff", ".woff2")):
+        return "字体", 12
+    if "/templates/" in path:
+        return "模板资源", 10
+    if "text/css" in mime or path.endswith(".css"):
+        return "样式", 7
+    if mime.startswith("image/") or any(path.endswith(extension) for extension in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico")):
+        return "图片", 5
+    if mime.startswith("video/") or mime.startswith("audio/") or any(path.endswith(extension) for extension in (".mp4", ".webm", ".m3u8")):
+        return "媒体", 5
+    if "javascript" in mime or path.endswith(".js"):
+        return "脚本", 3
+    if "json" in mime or path.endswith(".json"):
+        return "数据", 2
+    if "text/html" in mime or path.endswith((".html", ".htm")):
+        return "页面", 1
+    extension = Path(path).suffix
+    if extension in RESOURCE_EXTENSIONS:
+        return RESOURCE_EXTENSIONS[extension], 1
+    return "", 0
+
+
+def text_resource(content_type: str, url: str) -> bool:
+    mime = content_type.lower()
+    path = urlsplit(url).path.lower()
+    return (
+        mime.startswith("text/")
+        or "javascript" in mime
+        or "json" in mime
+        or path.endswith((".html", ".htm", ".css", ".js", ".json"))
+    )
+
+
+def extract_resource_urls(text: str, base_url: str, content_type: str) -> list[str]:
+    normalized_text = text.replace("\\/", "/").replace("\\u002F", "/").replace("\\u002f", "/")
+    raw_urls: list[str] = []
+    if "html" in content_type or urlsplit(base_url).path.lower().endswith((".html", ".htm", "/")):
+        parser = ResourceHTMLParser(base_url)
+        try:
+            parser.feed(normalized_text)
+            raw_urls.extend(parser.urls)
+        except Exception:
+            pass
+    raw_urls.extend(match.group(0) for match in DISCOVERY_URL_PATTERN.finditer(normalized_text))
+    relative_pattern = re.compile(
+        r"[\"'(]((?:/|\./|\.\./)[^\s\"'()<>]+\.(?:html?|css|js|json|otf|ttf|woff2?|png|jpe?g|gif|webp|svg|ico|mp4|webm|m3u8)(?:\?[^\s\"'()<>]*)?)",
+        re.IGNORECASE,
+    )
+    raw_urls.extend(match.group(1) for match in relative_pattern.finditer(normalized_text))
+
+    results: list[str] = []
+    for raw_url in raw_urls:
+        if raw_url.startswith("//"):
+            raw_url = "https:" + raw_url
+        candidate = urljoin(base_url, raw_url)
+        try:
+            candidate = normalize_discovery_url(candidate, "资源地址")
+        except AdminError:
+            continue
+        if candidate not in results:
+            results.append(candidate)
+    return results
+
+
+def parse_render_parameters(url: str) -> dict[str, str]:
+    values = {key.lower(): entries[-1] for key, entries in parse_qs(urlsplit(url).query).items() if entries}
+    result: dict[str, str] = {}
+    mappings = (("channelid", "channelId"), ("accountid", "accountId"), ("token", "token"))
+    for source_key, result_key in mappings:
+        value = values.get(source_key, "")
+        if not value:
+            continue
+        try:
+            if result_key == "token":
+                result[result_key] = validate_token(value, "")
+            else:
+                result[result_key] = validate_id(value, result_key)
+        except AdminError:
+            continue
+    return result
+
+
+def safe_sample_path(url: str) -> str:
+    parsed = urlsplit(url)
+    path = parsed.path or "/"
+    path = re.sub(
+        r"^(/templates-auth/[^/]+/)[^/]+",
+        r"\1<token>",
+        path,
+        flags=re.IGNORECASE,
+    )
+    return path if len(path) <= 160 else path[:157] + "..."
+
+
+def related_site_host(origin_host: str, candidate_host: str) -> bool:
+    origin_parts = origin_host.lower().split(".")
+    candidate_parts = candidate_host.lower().split(".")
+    return candidate_host == origin_host or (
+        len(origin_parts) >= 2
+        and len(candidate_parts) >= 2
+        and origin_parts[-2:] == candidate_parts[-2:]
+    )
+
+
+def discover_site(source_value: object, evidence_value: object = "") -> dict[str, object]:
+    source_url = normalize_discovery_url(source_value, "原始网页地址")
+    evidence_url = ""
+    if isinstance(evidence_value, str) and evidence_value.strip():
+        evidence_url = normalize_discovery_url(evidence_value, "F12 资源地址")
+    elif evidence_value not in (None, ""):
+        raise AdminError("F12 资源地址格式不正确")
+
+    if not DISCOVERY_LIMIT.acquire(timeout=1):
+        raise AdminError("当前正在执行其他识别任务，请稍后重试")
+    try:
+        source_fetch = fetch_public_url(source_url)
+        if source_fetch.status < 200 or source_fetch.status >= 400:
+            raise AdminError(f"原始网页返回 HTTP {source_fetch.status}，无法继续识别")
+        origin_host = urlsplit(source_fetch.url).hostname or ""
+        parameters = parse_render_parameters(source_url)
+        candidates: dict[str, dict[str, object]] = {}
+        queue: list[str] = []
+        queued: set[str] = {source_fetch.url}
+        inspected = 1
+        downloaded = len(source_fetch.body)
+        warnings: list[str] = []
+
+        def record(url: str, content_type: str = "", verified: bool = False, status: int = 0) -> None:
+            host = urlsplit(url).hostname or ""
+            category, weight = classify_resource(url, content_type)
+            if not host or not category:
+                return
+            item = candidates.setdefault(
+                host,
+                {
+                    "host": host,
+                    "score": 0,
+                    "types": set(),
+                    "samples": [],
+                    "firstUrl": url,
+                    "compatible": False,
+                    "verified": False,
+                    "valid": False,
+                    "status": 0,
+                    "contentType": "",
+                },
+            )
+            item["score"] = int(item["score"]) + weight
+            item["types"].add(category)  # type: ignore[union-attr]
+            sample = safe_sample_path(url)
+            if urlsplit(url).path.lower().startswith("/templates/"):
+                item["compatible"] = True
+            if sample not in item["samples"] and len(item["samples"]) < 2:  # type: ignore[arg-type]
+                item["samples"].append(sample)  # type: ignore[union-attr]
+            if verified:
+                valid_response = 200 <= status < 300 and not (
+                    category != "页面" and content_type == "text/html"
+                )
+                item["verified"] = True
+                item["valid"] = valid_response
+                item["status"] = status
+                item["contentType"] = content_type or "未知类型"
+                item["score"] = int(item["score"]) + (15 if valid_response else -30)
+
+        def scan_text(fetch: DiscoveryFetch) -> None:
+            if not text_resource(fetch.content_type, fetch.url) or not fetch.body:
+                return
+            text = fetch.body.decode("utf-8", errors="replace")
+            for resource_url in extract_resource_urls(text, fetch.url, fetch.content_type):
+                record(resource_url)
+                resource_host = urlsplit(resource_url).hostname or ""
+                _category, weight = classify_resource(resource_url)
+                if (
+                    weight > 0
+                    and resource_url not in queued
+                    and related_site_host(origin_host, resource_host)
+                    and len(queue) < DISCOVERY_MAX_ASSETS * 3
+                ):
+                    queue.append(resource_url)
+                    queued.add(resource_url)
+
+        scan_text(source_fetch)
+        while queue and inspected < DISCOVERY_MAX_ASSETS and downloaded < DISCOVERY_MAX_TOTAL:
+            resource_url = queue.pop(0)
+            category, _weight = classify_resource(resource_url)
+            if category not in {"页面", "样式", "脚本", "数据"}:
+                continue
+            try:
+                fetched = fetch_public_url(resource_url, min(DISCOVERY_MAX_DOCUMENT, DISCOVERY_MAX_TOTAL - downloaded))
+            except AdminError:
+                continue
+            inspected += 1
+            downloaded += len(fetched.body)
+            record(fetched.url, fetched.content_type, True, fetched.status)
+            if 200 <= fetched.status < 300:
+                scan_text(fetched)
+
+        verification_items = sorted(
+            (
+                item
+                for host, item in candidates.items()
+                if host != origin_host and not item["verified"]
+            ),
+            key=lambda item: int(item["score"]),
+            reverse=True,
+        )
+        for item in verification_items[:3]:
+            first_url = str(item["firstUrl"])
+            first_host = urlsplit(first_url).hostname or ""
+            if not related_site_host(origin_host, first_host):
+                continue
+            try:
+                fetched = fetch_public_url(first_url, 128 * 1024)
+            except AdminError:
+                continue
+            inspected += 1
+            record(fetched.url, fetched.content_type, True, fetched.status)
+
+        if evidence_url:
+            evidence_fetch = fetch_public_url(evidence_url, 128 * 1024)
+            inspected += 1
+            record(evidence_fetch.url, evidence_fetch.content_type, True, evidence_fetch.status)
+            if not 200 <= evidence_fetch.status < 300:
+                warnings.append(f"F12 资源返回 HTTP {evidence_fetch.status}，不建议直接使用该域名")
+            elif evidence_fetch.content_type == "text/html":
+                warnings.append("F12 资源返回的是 HTML，不像字体、图片或脚本，请换一个成功的资源请求")
+
+        ranked: list[dict[str, object]] = []
+        for host, item in candidates.items():
+            if host == origin_host:
+                item["score"] = int(item["score"]) - 4
+            if evidence_url and host == (urlsplit(evidence_url).hostname or ""):
+                item["score"] = int(item["score"]) + 30
+            if int(item["score"]) <= 0:
+                continue
+            ranked.append(
+                {
+                    "host": host,
+                    "score": int(item["score"]),
+                    "types": sorted(item["types"]),
+                    "samples": list(item["samples"]),
+                    "compatible": bool(item["compatible"]),
+                    "verified": bool(item["verified"]),
+                    "valid": bool(item["valid"]),
+                    "status": int(item["status"]),
+                    "contentType": str(item["contentType"]),
+                }
+            )
+        ranked.sort(
+            key=lambda item: (
+                bool(item["compatible"]),
+                bool(item["valid"]),
+                bool(item["verified"]),
+                int(item["score"]),
+            ),
+            reverse=True,
+        )
+        cdn_candidates = [item for item in ranked if item["host"] != origin_host]
+        compatible_candidates = [item for item in cdn_candidates if item["compatible"]]
+        evidence_host = urlsplit(evidence_url).hostname if evidence_url else ""
+        evidence_candidates = [
+            item
+            for item in cdn_candidates
+            if item["host"] == evidence_host and item["valid"] and item["compatible"]
+        ]
+        verified_compatible = [item for item in compatible_candidates if item["valid"]]
+        recommended = str(
+            (evidence_candidates or verified_compatible or compatible_candidates or [{"host": ""}])[0]["host"]
+        )
+        if not parameters.get("channelId") or not parameters.get("accountId") or not parameters.get("token"):
+            warnings.append("网页地址中没有识别出全部 channelId、accountId 和 token；未识别的字段会保持当前值")
+        if not cdn_candidates:
+            warnings.append("自动扫描没有确认独立 CDN；可以粘贴 F12 中任意成功字体、图片或 JS 的请求地址再次识别")
+        elif not compatible_candidates:
+            warnings.append("候选资源不在当前代理支持的 /templates/ 路径下；域名可供参考，但可能还需要适配 Nginx 路径规则")
+        return {
+            "sourceHost": origin_host,
+            "sourcePath": safe_sample_path(source_fetch.url),
+            "channelId": parameters.get("channelId", ""),
+            "accountId": parameters.get("accountId", ""),
+            "token": parameters.get("token", ""),
+            "recommendedHost": recommended,
+            "candidates": ranked[:8],
+            "inspectedCount": inspected,
+            "warnings": warnings,
+        }
+    finally:
+        DISCOVERY_LIMIT.release()
 
 
 def parse_allowed_networks(value: str | None) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
@@ -767,7 +1255,7 @@ class AdminHandler(BaseHTTPRequestHandler):
                 (self.set_session_cookie("", 0),),
             )
             return
-        if path not in {"/api/config", "/api/password"}:
+        if path not in {"/api/config", "/api/password", "/api/discover"}:
             self.send_json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "接口不存在"})
             return
         csrf_token = self.headers.get("X-CSRF-Token", "")
@@ -776,6 +1264,18 @@ class AdminHandler(BaseHTTPRequestHandler):
             return
         try:
             payload = self.read_json_body()
+            if path == "/api/discover":
+                result = discover_site(payload.get("sourceUrl"), payload.get("evidenceUrl", ""))
+                self.send_json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "message": "识别完成",
+                        "csrfToken": NONCES.issue(),
+                        "result": result,
+                    },
+                )
+                return
             if path == "/api/password":
                 change_password(payload.get("currentPassword"), payload.get("newPassword"))
                 SESSIONS.revoke_all()

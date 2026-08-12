@@ -89,6 +89,124 @@ class AdminConfigTests(unittest.TestCase):
         with self.assertRaises(admin.AdminError):
             admin.validate_token("bad token&x=1", "existing-token")
 
+    def test_discovery_url_normalization_extracts_url_and_rejects_unsafe_targets(self):
+        self.assertEqual(
+            admin.normalize_discovery_url(
+                "请求 URL: https://CDN.Example.com/assets/font.woff2?v=1", "资源地址"
+            ),
+            "https://cdn.example.com/assets/font.woff2?v=1",
+        )
+        for value in (
+            "http://cdn.example.com/font.woff2",
+            "https://127.0.0.1/font.woff2",
+            "https://user@cdn.example.com/font.woff2",
+            "https://cdn.example.com:8443/font.woff2",
+        ):
+            with self.subTest(value=value), self.assertRaises(admin.AdminError):
+                admin.normalize_discovery_url(value, "资源地址")
+
+    def test_public_address_validation_rejects_private_dns_answers(self):
+        original_getaddrinfo = admin.socket.getaddrinfo
+        try:
+            admin.socket.getaddrinfo = lambda *_args, **_kwargs: [
+                (admin.socket.AF_INET, admin.socket.SOCK_STREAM, 6, "", ("192.168.16.23", 443))
+            ]
+            with self.assertRaisesRegex(admin.AdminError, "禁止扫描"):
+                admin.resolve_public_addresses("internal.example")
+            admin.socket.getaddrinfo = lambda *_args, **_kwargs: [
+                (admin.socket.AF_INET, admin.socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+            ]
+            self.assertEqual(
+                admin.resolve_public_addresses("public.example"), ("93.184.216.34",)
+            )
+        finally:
+            admin.socket.getaddrinfo = original_getaddrinfo
+
+    def test_resource_extraction_and_render_parameter_parsing(self):
+        html = """
+        <link rel="stylesheet" href="https://cdn.example.com/templates/main.css">
+        <script src="/static/app.js"></script>
+        <img srcset="//img.example.com/team.png 1x, //img.example.com/team@2x.png 2x">
+        """
+        urls = admin.extract_resource_urls(html, "https://origin.example.com/render", "text/html")
+        self.assertIn("https://cdn.example.com/templates/main.css", urls)
+        self.assertIn("https://origin.example.com/static/app.js", urls)
+        self.assertIn("https://img.example.com/team.png", urls)
+        params = admin.parse_render_parameters(
+            "https://origin.example.com/render?rendererMode=onair&channelId=pgs26_p&token=secure-token-123&accountId=pgs26p"
+        )
+        self.assertEqual(
+            params,
+            {"channelId": "pgs26_p", "accountId": "pgs26p", "token": "secure-token-123"},
+        )
+        self.assertEqual(
+            admin.safe_sample_path(
+                "https://origin.example.com/templates-auth/channel_1/secret-token-123/board/index.html"
+            ),
+            "/templates-auth/channel_1/<token>/board/index.html",
+        )
+
+    def test_discovery_ranks_verified_f12_resource_as_cdn(self):
+        source = admin.DiscoveryFetch(
+            "https://origin.example.com/render?channelId=channel_1&accountId=account_1&token=secure-token-123",
+            200,
+            "text/html",
+            b'<link rel="stylesheet" href="https://cdn.example.com/templates/main.css">',
+        )
+        stylesheet = admin.DiscoveryFetch(
+            "https://cdn.example.com/templates/main.css",
+            200,
+            "text/css",
+            b'@font-face { src: url("https://cdn.example.com/templates/font.woff2"); }',
+        )
+        font = admin.DiscoveryFetch(
+            "https://cdn.example.com/templates/font.woff2",
+            200,
+            "font/woff2",
+            b"font-data",
+        )
+        original_fetch = admin.fetch_public_url
+        try:
+            def fake_fetch(url, maximum=admin.DISCOVERY_MAX_DOCUMENT):
+                del maximum
+                path = admin.urlsplit(url).path
+                if path.endswith("main.css"):
+                    return stylesheet
+                if path.endswith("font.woff2"):
+                    return font
+                return source
+
+            admin.fetch_public_url = fake_fetch
+            result = admin.discover_site(source.url, font.url)
+        finally:
+            admin.fetch_public_url = original_fetch
+        self.assertEqual(result["sourceHost"], "origin.example.com")
+        self.assertEqual(result["recommendedHost"], "cdn.example.com")
+        self.assertEqual(result["channelId"], "channel_1")
+        self.assertEqual(result["token"], "secure-token-123")
+        self.assertTrue(result["candidates"][0]["valid"])
+
+    def test_discovery_does_not_recommend_incompatible_asset_path(self):
+        source = admin.DiscoveryFetch(
+            "https://origin.example.com/render?channelId=channel_1&accountId=account_1&token=secure-token-123",
+            200,
+            "text/html",
+            b'<script src="https://assets.example.com/static/app.js"></script>',
+        )
+        script = admin.DiscoveryFetch(
+            "https://assets.example.com/static/app.js", 200, "application/javascript", b""
+        )
+        original_fetch = admin.fetch_public_url
+        try:
+            admin.fetch_public_url = lambda url, maximum=admin.DISCOVERY_MAX_DOCUMENT: (
+                script if admin.urlsplit(url).path.endswith("app.js") else source
+            )
+            result = admin.discover_site(source.url)
+        finally:
+            admin.fetch_public_url = original_fetch
+        self.assertEqual(result["recommendedHost"], "")
+        self.assertTrue(any("路径" in warning for warning in result["warnings"]))
+
     def test_default_admin_networks_allow_lan_and_reject_public_addresses(self):
         networks = admin.parse_allowed_networks(None)
         self.assertTrue(admin.address_is_allowed("192.168.16.23", networks))
@@ -333,9 +451,18 @@ class AuthenticationTests(unittest.TestCase):
             original_path = admin.PASSWORD_CONFIG
             original_sessions = admin.SESSIONS
             original_limiter = admin.LOGIN_LIMITER
+            original_nonces = admin.NONCES
+            original_discover = admin.discover_site
             admin.PASSWORD_CONFIG = path
             admin.SESSIONS = admin.SessionStore()
             admin.LOGIN_LIMITER = admin.LoginLimiter()
+            admin.NONCES = admin.NonceStore()
+            admin.discover_site = lambda source, evidence="": {
+                "sourceHost": "origin.example.com",
+                "recommendedHost": "cdn.example.com",
+                "source": source,
+                "evidence": evidence,
+            }
             server = admin.AdminHTTPServer(("127.0.0.1", 0), admin.AdminHandler)
             server.allowed_networks = admin.parse_allowed_networks(None)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -366,6 +493,29 @@ class AuthenticationTests(unittest.TestCase):
                 session_payload = json.loads(response.read())
                 self.assertTrue(session_payload["authenticated"])
 
+                csrf_token = admin.NONCES.issue()
+                connection.request(
+                    "POST",
+                    "/api/discover",
+                    body=json.dumps(
+                        {
+                            "sourceUrl": "https://origin.example.com/render",
+                            "evidenceUrl": "https://cdn.example.com/templates/font.woff2",
+                        }
+                    ),
+                    headers={
+                        "Content-Type": "application/json",
+                        "Origin": f"http://{host}",
+                        "Cookie": cookie,
+                        "X-CSRF-Token": csrf_token,
+                    },
+                )
+                response = connection.getresponse()
+                discovery_payload = json.loads(response.read())
+                self.assertEqual(response.status, 200)
+                self.assertEqual(discovery_payload["result"]["recommendedHost"], "cdn.example.com")
+                self.assertTrue(discovery_payload["csrfToken"])
+
                 connection.request(
                     "POST",
                     "/api/logout",
@@ -392,6 +542,8 @@ class AuthenticationTests(unittest.TestCase):
                 admin.PASSWORD_CONFIG = original_path
                 admin.SESSIONS = original_sessions
                 admin.LOGIN_LIMITER = original_limiter
+                admin.NONCES = original_nonces
+                admin.discover_site = original_discover
 
 
 if __name__ == "__main__":

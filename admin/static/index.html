@@ -90,6 +90,54 @@
         </form>
       </section>
 
+      <section class="workspace discovery-workspace" aria-labelledby="discovery-title">
+        <div class="section-heading">
+          <div>
+            <p class="section-number">02 / SMART DISCOVERY</p>
+            <h2 id="discovery-title">识别新网页</h2>
+          </div>
+          <span class="discovery-badge">由 Ubuntu 服务器检测</span>
+        </div>
+
+        <form id="discoveryForm" autocomplete="off">
+          <fieldset>
+            <legend>网页来源</legend>
+            <div class="discovery-grid">
+              <label class="field field-wide">
+                <span>原始网页完整地址</span>
+                <input id="sourceUrl" name="sourceUrl" type="url" inputmode="url" spellcheck="false" required placeholder="https://example.com/render?channelId=...&token=...&accountId=...">
+                <small>自动提取主站、channelId、accountId 和 token，并扫描页面引用的资源域名。</small>
+              </label>
+              <label class="field field-wide">
+                <span>F12 资源请求地址 <em>选填</em></span>
+                <input id="evidenceUrl" name="evidenceUrl" type="text" inputmode="url" spellcheck="false" placeholder="粘贴成功字体、图片、CSS 或 JS 的请求 URL">
+                <small>自动扫描没找到 CDN 时，从 F12 → 网络中复制任意成功资源地址粘贴到这里。</small>
+              </label>
+            </div>
+          </fieldset>
+          <div class="discovery-action">
+            <p><strong>安全扫描</strong><br>仅连接 HTTPS 公网域名，拒绝内网和保留地址。</p>
+            <button class="primary-button" id="discoverButton" type="submit">
+              <span>开始识别</span><i aria-hidden="true">↗</i>
+            </button>
+          </div>
+        </form>
+
+        <div class="discovery-results" id="discoveryResults" hidden aria-live="polite">
+          <div class="discovery-summary">
+            <div><span>识别主站</span><strong id="discoveredOrigin">—</strong></div>
+            <div><span>推荐 CDN</span><strong id="discoveredCdn">—</strong></div>
+            <div><span>检查资源</span><strong id="discoveredCount">0</strong></div>
+          </div>
+          <div id="discoveryWarnings" class="discovery-warnings"></div>
+          <div class="candidate-heading">
+            <div><strong>资源域名候选</strong><small>绿色“已验证”代表服务器拿到了正确类型的资源。</small></div>
+            <button type="button" class="quiet-button" id="applyDiscoveryButton">填入上方配置</button>
+          </div>
+          <div id="candidateList" class="candidate-list"></div>
+        </div>
+      </section>
+
       <section class="status-panel" aria-live="polite">
         <div class="status-icon" id="statusIcon">i</div>
         <div><strong id="statusTitle">正在读取服务器配置</strong><p id="statusMessage">请稍候，当前 token 不会传到浏览器。</p></div>
