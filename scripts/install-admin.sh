@@ -30,7 +30,7 @@ cleanup_stage() {
 }
 trap cleanup_stage EXIT
 
-for command in nginx systemctl python3 openssl awk sed; do
+for command in nginx systemctl python3 openssl awk sed grep; do
     command -v "$command" >/dev/null || die "required command is missing: $command"
 done
 
@@ -172,8 +172,12 @@ if [[ ! -f "$admin_env" ]]; then
     {
         printf 'OVERSEAS_ADMIN_USER=admin\n'
         printf 'OVERSEAS_ADMIN_PASSWORD=%s\n' "$admin_password"
+        printf 'OVERSEAS_ADMIN_ALLOWED_NETWORKS=192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,127.0.0.0/8,::1/128,fc00::/7,fe80::/10\n'
     } > "$admin_env"
     new_credentials=1
+fi
+if ! grep -q '^OVERSEAS_ADMIN_ALLOWED_NETWORKS=' "$admin_env"; then
+    printf 'OVERSEAS_ADMIN_ALLOWED_NETWORKS=192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,127.0.0.0/8,::1/128,fc00::/7,fe80::/10\n' >> "$admin_env"
 fi
 chown root:root "$admin_env"
 chmod 600 "$admin_env"
@@ -191,16 +195,14 @@ server_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
 server_ip=${server_ip:-SERVER_IP}
 
 printf '\nInstallation complete.\n\n'
-printf '1. On your Windows computer, keep this SSH tunnel open:\n'
-printf '   ssh -L 23000:127.0.0.1:23000 YOUR_SSH_USER@%s\n\n' "$server_ip"
-printf '2. Open this address in the browser:\n'
-printf '   http://127.0.0.1:23000\n\n'
+printf '1. Open this address directly from a trusted LAN computer:\n'
+printf '   http://%s:23000\n\n' "$server_ip"
 if [[ "$new_credentials" == 1 ]]; then
-    printf '3. Browser sign-in credentials (save these now):\n'
+    printf '2. Browser sign-in credentials (save these now):\n'
     printf '   Username: admin\n'
     printf '   Password: %s\n' "$admin_password"
 else
-    printf '3. Existing credentials were preserved. To view them on the server:\n'
+    printf '2. Existing credentials were preserved. To view them on the server:\n'
     printf '   sudo cat %s\n' "$admin_env"
 fi
-printf '\nThe panel is bound only to 127.0.0.1 and is not exposed to LAN clients.\n'
+printf '\nThe panel accepts configured private networks only. Do not forward TCP 23000 to the Internet.\n'

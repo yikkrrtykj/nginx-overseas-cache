@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local-only administration UI for the Nginx overseas cache."""
+"""LAN-restricted administration UI for the Nginx overseas cache."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import base64
 import binascii
 import fcntl
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -44,6 +45,16 @@ SETTING_PATTERN = re.compile(
     re.MULTILINE,
 )
 
+DEFAULT_ALLOWED_NETWORKS = (
+    "192.168.0.0/16",
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "127.0.0.0/8",
+    "::1/128",
+    "fc00::/7",
+    "fe80::/10",
+)
+
 
 class AdminError(RuntimeError):
     pass
@@ -56,6 +67,50 @@ class CurrentConfig:
     channel_id: str
     account_id: str
     token: str
+
+
+def parse_allowed_networks(value: str | None) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    entries = value.split(",") if value else DEFAULT_ALLOWED_NETWORKS
+    networks = []
+    for entry in entries:
+        normalized = entry.strip()
+        if not normalized:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(normalized, strict=False))
+        except ValueError as exc:
+            raise AdminError(f"无效的管理网段：{normalized}") from exc
+    if not networks:
+        raise AdminError("至少需要配置一个管理网段")
+    return tuple(networks)
+
+
+def address_is_allowed(
+    value: str,
+    networks: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...],
+) -> bool:
+    try:
+        address = ipaddress.ip_address(value.split("%", 1)[0])
+    except ValueError:
+        return False
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    return any(address.version == network.version and address in network for network in networks)
+
+
+def host_is_allowed(
+    host_header: str,
+    networks: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...],
+) -> bool:
+    try:
+        hostname = urlsplit(f"//{host_header}").hostname
+    except ValueError:
+        return False
+    if not hostname:
+        return False
+    if hostname.lower() == "localhost":
+        return address_is_allowed("127.0.0.1", networks)
+    return address_is_allowed(hostname, networks)
 
 
 def run_checked(command: list[str], timeout: int) -> str:
@@ -312,13 +367,17 @@ class AdminHandler(BaseHTTPRequestHandler):
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         self.send_bytes(status, "application/json; charset=utf-8", body)
 
-    def local_host_is_valid(self) -> bool:
-        host_header = self.headers.get("Host", "")
-        try:
-            parsed = urlsplit(f"//{host_header}")
-            return parsed.hostname in {"127.0.0.1", "localhost", "::1"}
-        except ValueError:
-            return False
+    @property
+    def allowed_networks(self) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+        return self.server.allowed_networks  # type: ignore[attr-defined]
+
+    def request_host_is_valid(self) -> bool:
+        return host_is_allowed(self.headers.get("Host", ""), self.allowed_networks)
+
+    def client_is_valid(self) -> bool:
+        # Deliberately use the socket peer address and ignore X-Forwarded-For so
+        # a remote client cannot grant itself LAN access with a forged header.
+        return address_is_allowed(self.client_address[0], self.allowed_networks)
 
     def authorized(self) -> bool:
         expected_user = os.environ["OVERSEAS_ADMIN_USER"]
@@ -336,8 +395,11 @@ class AdminHandler(BaseHTTPRequestHandler):
         )
 
     def authenticate_request(self) -> bool:
-        if not self.local_host_is_valid():
-            self.send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "message": "管理页只能通过本机或 SSH 隧道访问"})
+        if not self.client_is_valid():
+            self.send_json(HTTPStatus.FORBIDDEN, {"ok": False, "message": "管理页只允许配置的内网地址访问"})
+            return False
+        if not self.request_host_is_valid():
+            self.send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "message": "请使用服务器的内网 IP 打开管理页"})
             return False
         if self.authorized():
             return True
@@ -360,9 +422,9 @@ class AdminHandler(BaseHTTPRequestHandler):
             host = urlsplit(f"//{self.headers.get('Host', '')}")
             return (
                 parsed.scheme == "http"
-                and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
                 and parsed.hostname == host.hostname
                 and parsed.port == host.port
+                and host_is_allowed(self.headers.get("Host", ""), self.allowed_networks)
             )
         except ValueError:
             return False
@@ -455,7 +517,7 @@ class AdminHandler(BaseHTTPRequestHandler):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", default=23000, type=int)
     return parser.parse_args()
 
@@ -470,7 +532,13 @@ def main() -> int:
     if not username or len(password) < 16:
         print("OVERSEAS_ADMIN_USER and a 16+ character password are required.", file=sys.stderr)
         return 1
+    try:
+        allowed_networks = parse_allowed_networks(os.environ.get("OVERSEAS_ADMIN_ALLOWED_NETWORKS"))
+    except AdminError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     server = ThreadingHTTPServer((args.host, args.port), AdminHandler)
+    server.allowed_networks = allowed_networks  # type: ignore[attr-defined]
     server.daemon_threads = True
     print(f"Overseas Cache Admin listening on http://{args.host}:{args.port}", flush=True)
     try:

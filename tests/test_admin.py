@@ -87,6 +87,22 @@ class AdminConfigTests(unittest.TestCase):
         with self.assertRaises(admin.AdminError):
             admin.validate_token("bad token&x=1", "existing-token")
 
+    def test_default_admin_networks_allow_lan_and_reject_public_addresses(self):
+        networks = admin.parse_allowed_networks(None)
+        self.assertTrue(admin.address_is_allowed("192.168.16.23", networks))
+        self.assertTrue(admin.address_is_allowed("192.168.60.92", networks))
+        self.assertTrue(admin.address_is_allowed("::ffff:192.168.60.92", networks))
+        self.assertFalse(admin.address_is_allowed("8.8.8.8", networks))
+        self.assertTrue(admin.host_is_allowed("192.168.16.23:23000", networks))
+        self.assertFalse(admin.host_is_allowed("8.8.8.8:23000", networks))
+
+    def test_custom_admin_networks_are_enforced(self):
+        networks = admin.parse_allowed_networks("192.168.16.0/24, 127.0.0.1/32")
+        self.assertTrue(admin.address_is_allowed("192.168.16.23", networks))
+        self.assertFalse(admin.address_is_allowed("192.168.60.92", networks))
+        with self.assertRaises(admin.AdminError):
+            admin.parse_allowed_networks("not-a-network")
+
     def test_settings_round_trip_and_no_shell_syntax(self):
         content = admin.render_settings("channel_1", "account-1", "secure_token-123")
         self.assertEqual(

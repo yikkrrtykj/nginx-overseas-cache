@@ -1,5 +1,5 @@
 [Unit]
-Description=Local administration panel for the Nginx overseas cache
+Description=LAN administration panel for the Nginx overseas cache
 After=network.target nginx.service
 Requires=nginx.service
 
@@ -9,7 +9,7 @@ User=root
 Group=root
 WorkingDirectory=/opt/nginx-overseas-cache-admin
 EnvironmentFile=/etc/nginx/overseas-cache/admin.env
-ExecStart=/usr/bin/python3 /opt/nginx-overseas-cache-admin/server.py --host 127.0.0.1 --port 23000
+ExecStart=/usr/bin/python3 /opt/nginx-overseas-cache-admin/server.py --host 0.0.0.0 --port 23000
 Restart=on-failure
 RestartSec=3s
 UMask=0077
@@ -31,4 +31,3 @@ SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target
-

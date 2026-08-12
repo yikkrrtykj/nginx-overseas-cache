@@ -86,7 +86,7 @@ sudo systemctl reload nginx
 
 ### 使用管理页面（推荐）
 
-仓库现在包含一个仅监听 Ubuntu 本机的管理面板。它可以填写：
+仓库包含一个可由可信内网直接访问的管理面板。它可以填写：
 
 - 主站域名；
 - 静态 CDN 域名；
@@ -103,16 +103,10 @@ sudo bash scripts/install-admin.sh
 
 安装程序会备份并部署仓库中的最新 Nginx 配置。如果当前 channel/account/token 仍直接写在旧的站点配置中，安装程序会尝试自动迁移到权限为 `0600` 的 `settings.conf`。
 
-安装完成后，它会显示随机生成的管理密码。管理服务只监听 `127.0.0.1:23000`，不会开放给其他内网电脑。在 Windows PowerShell 建立 SSH 隧道：
-
-```powershell
-ssh -L 23000:127.0.0.1:23000 你的SSH用户@192.168.16.23
-```
-
-保持该窗口打开，然后浏览器访问：
+安装完成后，它会显示随机生成的管理密码。管理服务监听 `23000` 端口，但程序只接受私有内网网段，并且仍然要求用户名和密码。内网电脑直接访问：
 
 ```text
-http://127.0.0.1:23000
+http://192.168.16.23:23000
 ```
 
 使用安装程序显示的用户名和密码登录。管理页不会读取并显示原 token；token 输入框留空时会保持服务器上的当前值。每次保存都会自动备份、执行 `nginx -t` 并重新加载，失败会恢复旧配置。
@@ -124,13 +118,9 @@ sudo systemctl status overseas-cache-admin
 sudo journalctl -u overseas-cache-admin -n 100 --no-pager
 ```
 
-如果本机端口 23000 已被占用，可以把 PowerShell 命令左侧端口换成其他值，例如：
+默认允许的管理网段为 `192.168.0.0/16`、`10.0.0.0/8`、`172.16.0.0/12`、本机回环和 IPv6 私有地址。需要收紧范围时，编辑 `/etc/nginx/overseas-cache/admin.env` 中的 `OVERSEAS_ADMIN_ALLOWED_NETWORKS`，多个网段使用英文逗号分隔，然后执行 `sudo systemctl restart overseas-cache-admin`。
 
-```powershell
-ssh -L 23001:127.0.0.1:23000 你的SSH用户@192.168.16.23
-```
-
-随后打开 `http://127.0.0.1:23001`。
+> 管理页使用 HTTP，登录密码和新 token 在内网传输时不加密。它只适用于可信局域网，绝不能在路由器上映射或向公网开放 TCP 23000。
 
 ### 使用命令行脚本
 
@@ -196,10 +186,11 @@ sudo systemctl reload nginx
 
 ## 防火墙建议
 
-只允许内网访问 23333。以下示例允许整个 `192.168.0.0/16`，请按实际网段收紧：
+只允许内网访问 23333 和管理端口 23000。以下示例允许整个 `192.168.0.0/16`，请按实际网段收紧：
 
 ```bash
 sudo ufw allow from 192.168.0.0/16 to any port 23333 proto tcp
+sudo ufw allow from 192.168.0.0/16 to any port 23000 proto tcp
 ```
 
-不要在公网路由器上转发 23333，因为 URL 和访问日志中可能出现 token。
+不要在公网路由器上转发 23333 或 23000，因为 URL、管理密码和 token 都是敏感信息。
