@@ -4,8 +4,14 @@ server {
 
     server_name _;
 
+    server_tokens off;
     keepalive_timeout 65;
     client_max_body_size 20m;
+
+    # This format deliberately omits query strings and Referer values so the
+    # channel token is not written to the normal access log.
+    access_log /var/log/nginx/overseas-cache.access.log overseas_cache_safe;
+    error_log  /var/log/nginx/overseas-cache.error.log warn;
 
     # This file exists only on the server and contains channel/account/token.
     include /etc/nginx/overseas-cache/settings.conf;
@@ -21,12 +27,12 @@ server {
         proxy_pass https://webcoder_origin;
 
         proxy_ssl_server_name on;
-        proxy_ssl_name webcoder.atum.live;
+        proxy_ssl_name $overseas_origin_host;
         proxy_ssl_session_reuse on;
 
-        proxy_set_header Host webcoder.atum.live;
-        proxy_set_header Origin https://webcoder.atum.live;
-        proxy_set_header Referer https://webcoder.atum.live/;
+        proxy_set_header Host $overseas_origin_host;
+        proxy_set_header Origin "https://$overseas_origin_host";
+        proxy_set_header Referer "https://$overseas_origin_host/";
 
         proxy_http_version 1.1;
         proxy_set_header Connection "";
@@ -43,7 +49,9 @@ server {
 
         proxy_cache web_cache;
         proxy_cache_methods GET HEAD;
-        proxy_cache_key "$proxy_host$request_uri";
+        # Including the real upstream hostname prevents old objects being
+        # reused after scripts/change-upstreams.sh switches to another domain.
+        proxy_cache_key "$overseas_origin_host$request_uri";
 
         proxy_ignore_headers Cache-Control Expires Set-Cookie;
         proxy_hide_header Cache-Control;
@@ -69,12 +77,12 @@ server {
         proxy_pass https://webcoder_cdn;
 
         proxy_ssl_server_name on;
-        proxy_ssl_name webcodercdn.atum.live;
+        proxy_ssl_name $overseas_cdn_host;
         proxy_ssl_session_reuse on;
 
-        proxy_set_header Host webcodercdn.atum.live;
-        proxy_set_header Origin https://webcoder.atum.live;
-        proxy_set_header Referer https://webcoder.atum.live/;
+        proxy_set_header Host $overseas_cdn_host;
+        proxy_set_header Origin "https://$overseas_origin_host";
+        proxy_set_header Referer "https://$overseas_origin_host/";
 
         proxy_http_version 1.1;
         proxy_set_header Connection "";
@@ -95,15 +103,15 @@ server {
         sub_filter_once off;
         sub_filter_types text/css text/javascript application/javascript
                          application/json application/manifest+json;
-        sub_filter 'https://webcoder.atum.live' 'http://$http_host';
-        sub_filter 'https://webcodercdn.atum.live' 'http://$http_host';
-        sub_filter 'wss://webcoder.atum.live' 'ws://$http_host';
+        sub_filter "https://$overseas_origin_host" 'http://$http_host';
+        sub_filter "https://$overseas_cdn_host" 'http://$http_host';
+        sub_filter "wss://$overseas_origin_host" 'ws://$http_host';
 
-        proxy_redirect https://webcodercdn.atum.live/ http://$http_host/;
+        proxy_redirect "https://$overseas_cdn_host/" http://$http_host/;
 
         proxy_cache web_cache;
         proxy_cache_methods GET HEAD;
-        proxy_cache_key "$proxy_host$request_uri";
+        proxy_cache_key "$overseas_cdn_host$request_uri";
         proxy_ignore_headers Set-Cookie;
         proxy_hide_header Set-Cookie;
 
@@ -137,12 +145,12 @@ server {
         proxy_pass https://webcoder_origin;
 
         proxy_ssl_server_name on;
-        proxy_ssl_name webcoder.atum.live;
+        proxy_ssl_name $overseas_origin_host;
         proxy_ssl_session_reuse on;
 
-        proxy_set_header Host webcoder.atum.live;
-        proxy_set_header Origin https://webcoder.atum.live;
-        proxy_set_header Referer https://webcoder.atum.live/;
+        proxy_set_header Host $overseas_origin_host;
+        proxy_set_header Origin "https://$overseas_origin_host";
+        proxy_set_header Referer "https://$overseas_origin_host/";
 
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -156,22 +164,21 @@ server {
         proxy_cache off;
         proxy_buffering off;
 
-        proxy_redirect https://webcoder.atum.live/ http://$http_host/;
-        proxy_redirect http://webcoder.atum.live/ http://$http_host/;
+        proxy_redirect "https://$overseas_origin_host/" http://$http_host/;
+        proxy_redirect "http://$overseas_origin_host/" http://$http_host/;
 
         proxy_set_header Accept-Encoding "";
         sub_filter_once off;
         sub_filter_types text/css text/javascript application/javascript
                          application/json application/manifest+json;
-        sub_filter 'https://webcoder.atum.live' 'http://$http_host';
-        sub_filter 'https://webcodercdn.atum.live' 'http://$http_host';
-        sub_filter 'wss://webcoder.atum.live' 'ws://$http_host';
+        sub_filter "https://$overseas_origin_host" 'http://$http_host';
+        sub_filter "https://$overseas_cdn_host" 'http://$http_host';
+        sub_filter "wss://$overseas_origin_host" 'ws://$http_host';
 
         proxy_hide_header Content-Security-Policy;
         proxy_hide_header Content-Security-Policy-Report-Only;
 
-        proxy_cookie_domain webcoder.atum.live $host;
-        proxy_cookie_domain .atum.live $host;
+        proxy_cookie_domain ~^.*$ $host;
         proxy_cookie_flags ~ nosecure samesite=lax;
     }
 
@@ -180,12 +187,12 @@ server {
         proxy_pass https://webcoder_origin;
 
         proxy_ssl_server_name on;
-        proxy_ssl_name webcoder.atum.live;
+        proxy_ssl_name $overseas_origin_host;
         proxy_ssl_session_reuse on;
 
-        proxy_set_header Host webcoder.atum.live;
-        proxy_set_header Origin https://webcoder.atum.live;
-        proxy_set_header Referer https://webcoder.atum.live/;
+        proxy_set_header Host $overseas_origin_host;
+        proxy_set_header Origin "https://$overseas_origin_host";
+        proxy_set_header Referer "https://$overseas_origin_host/";
 
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -199,22 +206,21 @@ server {
         proxy_cache off;
         proxy_buffering off;
 
-        proxy_redirect https://webcoder.atum.live/ http://$http_host/;
-        proxy_redirect http://webcoder.atum.live/ http://$http_host/;
+        proxy_redirect "https://$overseas_origin_host/" http://$http_host/;
+        proxy_redirect "http://$overseas_origin_host/" http://$http_host/;
 
         proxy_set_header Accept-Encoding "";
         sub_filter_once off;
         sub_filter_types text/css text/javascript application/javascript
                          application/json application/manifest+json;
-        sub_filter 'https://webcoder.atum.live' 'http://$http_host';
-        sub_filter 'https://webcodercdn.atum.live' 'http://$http_host';
-        sub_filter 'wss://webcoder.atum.live' 'ws://$http_host';
+        sub_filter "https://$overseas_origin_host" 'http://$http_host';
+        sub_filter "https://$overseas_cdn_host" 'http://$http_host';
+        sub_filter "wss://$overseas_origin_host" 'ws://$http_host';
 
         proxy_hide_header Content-Security-Policy;
         proxy_hide_header Content-Security-Policy-Report-Only;
 
-        proxy_cookie_domain webcoder.atum.live $host;
-        proxy_cookie_domain .atum.live $host;
+        proxy_cookie_domain ~^.*$ $host;
         proxy_cookie_flags ~ nosecure samesite=lax;
     }
 }
