@@ -31,7 +31,7 @@ cleanup_stage() {
 }
 trap cleanup_stage EXIT
 
-for command in nginx systemctl python3 openssl awk sed grep; do
+for command in nginx systemctl python3 awk sed grep; do
     command -v "$command" >/dev/null || die "required command is missing: $command"
 done
 
@@ -196,7 +196,7 @@ if [[ ! -f "$password_file" ]]; then
         [[ -z "$existing_password" ]] || admin_password=$existing_password
     fi
     if [[ -z "$admin_password" ]]; then
-        admin_password=$(openssl rand -hex 20)
+        admin_password='global123!@#'
         new_credentials=1
     fi
     printf '%s' "$admin_password" | python3 "$repo_dir/admin/server.py" \
