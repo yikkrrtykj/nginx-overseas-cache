@@ -1,6 +1,8 @@
 # Local secrets: never commit the real channel token.
 settings.conf
 admin.env
+admin-password.json
+nginx-overseas-cache-upgrade-*.tar.gz
 .env
 .env.*
 !.env.example

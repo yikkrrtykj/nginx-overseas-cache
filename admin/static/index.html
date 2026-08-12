@@ -27,7 +27,11 @@
             <p class="section-number">01 / CONFIGURATION</p>
             <h2 id="config-title">代理配置</h2>
           </div>
-          <button class="quiet-button" id="reloadButton" type="button">重新读取</button>
+          <div class="heading-actions">
+            <button class="quiet-button" id="passwordButton" type="button">修改密码</button>
+            <button class="quiet-button" id="logoutButton" type="button">退出</button>
+            <button class="quiet-button" id="reloadButton" type="button">重新读取</button>
+          </div>
         </div>
 
         <form id="configForm" autocomplete="off">
@@ -101,6 +105,34 @@
         <div class="dialog-actions">
           <button value="cancel" class="quiet-button">返回修改</button>
           <button value="confirm" class="primary-button">确认应用</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="passwordDialog">
+      <form id="passwordForm" class="dialog-card" autocomplete="off">
+        <p class="section-number">ACCOUNT SECURITY</p>
+        <h2>修改管理密码</h2>
+        <div class="password-fields">
+          <label class="field">
+            <span>当前密码</span>
+            <input id="currentPassword" type="password" autocomplete="current-password" required>
+          </label>
+          <label class="field">
+            <span>新密码</span>
+            <input id="newPassword" type="password" autocomplete="new-password" minlength="12" maxlength="256" required>
+            <small>至少 12 位，建议使用随机密码。</small>
+          </label>
+          <label class="field">
+            <span>确认新密码</span>
+            <input id="confirmPassword" type="password" autocomplete="new-password" minlength="12" maxlength="256" required>
+          </label>
+        </div>
+        <p class="dialog-error" id="passwordError" role="alert"></p>
+        <p class="dialog-note">修改后所有浏览器都会退出登录，需要使用新密码重新进入。</p>
+        <div class="dialog-actions">
+          <button id="cancelPassword" type="button" class="quiet-button">取消</button>
+          <button id="submitPassword" type="submit" class="primary-button">确认修改</button>
         </div>
       </form>
     </dialog>

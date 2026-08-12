@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>登录 · Overseas Cache Console</title>
+    <meta name="description" content="内网海外页面代理管理登录">
+    <link rel="stylesheet" href="/app.css">
+  </head>
+  <body class="login-body">
+    <main class="login-shell">
+      <section class="login-brand">
+        <p class="eyebrow">NGINX · PRIVATE NETWORK</p>
+        <h1>Control<br><span>Access</span></h1>
+        <p class="lede">登录后可修改上游域名、频道参数和访问令牌。管理端口只允许可信内网访问。</p>
+        <div class="security-note">
+          <span class="pulse"></span>
+          <div><strong>内网管理入口</strong><small>会话在 8 小时后自动过期</small></div>
+        </div>
+      </section>
+
+      <section class="login-card" aria-labelledby="login-title">
+        <p class="section-number">AUTHENTICATION</p>
+        <h2 id="login-title">管理员登录</h2>
+        <p class="login-copy">请输入服务器管理账号，不是渲染页面的 accountId。</p>
+        <form id="loginForm" autocomplete="on">
+          <label class="field">
+            <span>用户名</span>
+            <input id="username" name="username" value="admin" autocomplete="username" required autofocus>
+          </label>
+          <label class="field">
+            <span>密码</span>
+            <div class="token-control">
+              <input id="password" name="password" type="password" autocomplete="current-password" required>
+              <button id="toggleLoginPassword" type="button" aria-label="显示或隐藏密码">显示</button>
+            </div>
+          </label>
+          <p class="login-error" id="loginError" role="alert"></p>
+          <button class="primary-button login-button" id="loginButton" type="submit">
+            <span>进入控制台</span><i aria-hidden="true">→</i>
+          </button>
+        </form>
+        <p class="http-warning">当前为 HTTP 内网连接。请勿通过公共 Wi-Fi 或互联网访问本页面。</p>
+      </section>
+    </main>
+    <script src="/login.js" defer></script>
+  </body>
+</html>

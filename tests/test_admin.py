@@ -1,7 +1,10 @@
 import importlib.util
+import http.client
+import json
 import os
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from pathlib import Path
@@ -264,6 +267,131 @@ class NonceTests(unittest.TestCase):
         token = store.issue()
         self.assertTrue(store.consume(token))
         self.assertFalse(store.consume(token))
+
+
+class AuthenticationTests(unittest.TestCase):
+    def test_password_record_verification_and_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "admin-password.json"
+            path.write_text(admin.render_password_record("admin", "correct-horse-123"), encoding="utf-8")
+            self.assertTrue(admin.verify_credentials("admin", "correct-horse-123", path))
+            self.assertFalse(admin.verify_credentials("admin", "wrong-password-123", path))
+            self.assertFalse(admin.verify_credentials("other", "correct-horse-123", path))
+            record = path.read_text(encoding="utf-8")
+            self.assertNotIn("correct-horse-123", record)
+            self.assertIn("pbkdf2-sha256", record)
+        with self.assertRaises(admin.AdminError):
+            admin.render_password_record("admin", "too-short")
+
+    def test_session_store_can_revoke_one_or_all_sessions(self):
+        store = admin.SessionStore()
+        first = store.issue("admin")
+        second = store.issue("admin")
+        self.assertTrue(store.valid(first))
+        self.assertTrue(store.valid(second))
+        store.revoke(first)
+        self.assertFalse(store.valid(first))
+        self.assertTrue(store.valid(second))
+        store.revoke_all()
+        self.assertFalse(store.valid(second))
+
+    def test_change_password_replaces_hash_and_rejects_old_password(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "admin-password.json"
+            path.write_text(admin.render_password_record("admin", "old-password-123"), encoding="utf-8")
+            original_path = admin.PASSWORD_CONFIG
+            original_chown = getattr(admin.os, "chown", None)
+            admin.PASSWORD_CONFIG = path
+            admin.os.chown = lambda *_args: None
+            try:
+                admin.change_password("old-password-123", "new-password-456")
+                self.assertFalse(admin.verify_credentials("admin", "old-password-123", path))
+                self.assertTrue(admin.verify_credentials("admin", "new-password-456", path))
+            finally:
+                admin.PASSWORD_CONFIG = original_path
+                if original_chown is None:
+                    delattr(admin.os, "chown")
+                else:
+                    admin.os.chown = original_chown
+
+    def test_login_limiter_blocks_after_five_failures(self):
+        limiter = admin.LoginLimiter()
+        address = "192.168.16.50"
+        for _ in range(5):
+            self.assertTrue(limiter.allowed(address)[0])
+            limiter.fail(address)
+        allowed, retry_after = limiter.allowed(address)
+        self.assertFalse(allowed)
+        self.assertGreater(retry_after, 0)
+        limiter.success(address)
+        self.assertTrue(limiter.allowed(address)[0])
+
+    def test_http_login_session_and_logout_flow(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "admin-password.json"
+            path.write_text(admin.render_password_record("admin", "login-password-123"), encoding="utf-8")
+            original_path = admin.PASSWORD_CONFIG
+            original_sessions = admin.SESSIONS
+            original_limiter = admin.LOGIN_LIMITER
+            admin.PASSWORD_CONFIG = path
+            admin.SESSIONS = admin.SessionStore()
+            admin.LOGIN_LIMITER = admin.LoginLimiter()
+            server = admin.AdminHTTPServer(("127.0.0.1", 0), admin.AdminHandler)
+            server.allowed_networks = admin.parse_allowed_networks(None)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+            host = f"127.0.0.1:{server.server_port}"
+            try:
+                connection.request("GET", "/")
+                response = connection.getresponse()
+                response.read()
+                self.assertEqual(response.status, 303)
+                self.assertEqual(response.getheader("Location"), "/login")
+
+                body = json.dumps({"username": "admin", "password": "login-password-123"})
+                connection.request(
+                    "POST",
+                    "/api/login",
+                    body=body,
+                    headers={"Content-Type": "application/json", "Origin": f"http://{host}"},
+                )
+                response = connection.getresponse()
+                response.read()
+                self.assertEqual(response.status, 200)
+                cookie = response.getheader("Set-Cookie").split(";", 1)[0]
+
+                connection.request("GET", "/api/session", headers={"Cookie": cookie})
+                response = connection.getresponse()
+                session_payload = json.loads(response.read())
+                self.assertTrue(session_payload["authenticated"])
+
+                connection.request(
+                    "POST",
+                    "/api/logout",
+                    body="{}",
+                    headers={
+                        "Content-Type": "application/json",
+                        "Origin": f"http://{host}",
+                        "Cookie": cookie,
+                    },
+                )
+                response = connection.getresponse()
+                response.read()
+                self.assertEqual(response.status, 200)
+
+                connection.request("GET", "/api/session", headers={"Cookie": cookie})
+                response = connection.getresponse()
+                session_payload = json.loads(response.read())
+                self.assertFalse(session_payload["authenticated"])
+            finally:
+                connection.close()
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+                admin.PASSWORD_CONFIG = original_path
+                admin.SESSIONS = original_sessions
+                admin.LOGIN_LIMITER = original_limiter
 
 
 if __name__ == "__main__":

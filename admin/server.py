@@ -4,9 +4,8 @@
 from __future__ import annotations
 
 import argparse
-import base64
-import binascii
 import fcntl
+import hashlib
 import hmac
 import ipaddress
 import json
@@ -22,6 +21,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from http import HTTPStatus
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -30,6 +30,7 @@ from urllib.parse import urlsplit
 UPSTREAM_CONFIG = Path("/etc/nginx/conf.d/proxy-cache.conf")
 SITE_CONFIG = Path("/etc/nginx/sites-available/overseas-cache")
 SETTINGS_CONFIG = Path("/etc/nginx/overseas-cache/settings.conf")
+PASSWORD_CONFIG = Path("/etc/nginx/overseas-cache/admin-password.json")
 BACKUP_ROOT = Path("/etc/nginx/overseas-cache/backups")
 LOCK_FILE = Path("/run/overseas-cache-admin.lock")
 STATIC_ROOT = Path(__file__).resolve().parent / "static"
@@ -40,6 +41,7 @@ HOST_PATTERN = re.compile(
 )
 ID_PATTERN = re.compile(r"[A-Za-z0-9._~-]{1,128}\Z")
 TOKEN_PATTERN = re.compile(r"[A-Za-z0-9._~=-]{8,512}\Z")
+USERNAME_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,64}\Z")
 SETTING_PATTERN = re.compile(
     r'^\s*set\s+\$(render_channel|render_account|render_token)\s+"([^"]*)"\s*;\s*$',
     re.MULTILINE,
@@ -51,6 +53,10 @@ DEFAULT_ALLOWED_NETWORKS = (
     "172.16.0.0/12",
     "127.0.0.0/8",
 )
+PASSWORD_ITERATIONS = 600_000
+SESSION_COOKIE = "overseas_admin_session"
+SESSION_TTL = 8 * 60 * 60
+PASSWORD_LOCK = threading.Lock()
 
 
 class AdminError(RuntimeError):
@@ -282,6 +288,89 @@ def atomic_write(path: Path, content: str, mode: int) -> None:
             pass
 
 
+def validate_password(value: object, label: str = "密码") -> str:
+    if not isinstance(value, str):
+        raise AdminError(f"{label}格式不正确")
+    if len(value) < 12 or len(value) > 256:
+        raise AdminError(f"{label}长度必须为 12 到 256 个字符")
+    return value
+
+
+def derive_password(password: str, salt: bytes, iterations: int = PASSWORD_ITERATIONS) -> bytes:
+    return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+
+
+def render_password_record(username: str, password: str) -> str:
+    if not USERNAME_PATTERN.fullmatch(username):
+        raise AdminError("管理员用户名格式不正确")
+    validate_password(password)
+    salt = secrets.token_bytes(32)
+    digest = derive_password(password, salt)
+    return json.dumps(
+        {
+            "version": 1,
+            "username": username,
+            "algorithm": "pbkdf2-sha256",
+            "iterations": PASSWORD_ITERATIONS,
+            "salt": salt.hex(),
+            "digest": digest.hex(),
+        },
+        separators=(",", ":"),
+    ) + "\n"
+
+
+def read_password_record(path: Path | None = None) -> dict[str, object]:
+    selected_path = PASSWORD_CONFIG if path is None else path
+    try:
+        record = json.loads(read_text(selected_path))
+        username = record["username"]
+        algorithm = record["algorithm"]
+        iterations = record["iterations"]
+        salt = bytes.fromhex(record["salt"])
+        digest = bytes.fromhex(record["digest"])
+    except (AdminError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise AdminError("管理员密码文件损坏，请在服务器重新运行安装程序") from exc
+    if (
+        record.get("version") != 1
+        or algorithm != "pbkdf2-sha256"
+        or not isinstance(username, str)
+        or not USERNAME_PATTERN.fullmatch(username)
+        or not isinstance(iterations, int)
+        or not 200_000 <= iterations <= 2_000_000
+        or len(salt) < 16
+        or len(digest) != 32
+    ):
+        raise AdminError("管理员密码文件格式不受支持")
+    return record
+
+
+def verify_credentials(username: object, password: object, path: Path | None = None) -> bool:
+    if not isinstance(username, str) or not isinstance(password, str):
+        return False
+    try:
+        record = read_password_record(path)
+        salt = bytes.fromhex(str(record["salt"]))
+        expected = bytes.fromhex(str(record["digest"]))
+        actual = derive_password(password, salt, int(record["iterations"]))
+    except (AdminError, ValueError):
+        return False
+    username_matches = hmac.compare_digest(username, str(record["username"]))
+    password_matches = hmac.compare_digest(actual, expected)
+    return username_matches and password_matches
+
+
+def change_password(current_password: object, new_password: object) -> None:
+    with PASSWORD_LOCK:
+        record = read_password_record()
+        username = str(record["username"])
+        if not verify_credentials(username, current_password):
+            raise AdminError("当前密码不正确")
+        normalized = validate_password(new_password, "新密码")
+        if hmac.compare_digest(str(current_password), normalized):
+            raise AdminError("新密码不能与当前密码相同")
+        atomic_write(PASSWORD_CONFIG, render_password_record(username, normalized), 0o600)
+
+
 def backup_files() -> Path:
     timestamp = datetime.now(timezone.utc).strftime("admin-%Y%m%dT%H%M%SZ-%f")
     backup_dir = BACKUP_ROOT / timestamp
@@ -365,7 +454,74 @@ class NonceStore:
         return expiry > now
 
 
+class SessionStore:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._items: dict[str, tuple[str, float]] = {}
+
+    def issue(self, username: str) -> str:
+        now = time.monotonic()
+        token = secrets.token_urlsafe(48)
+        with self._lock:
+            self._items = {
+                key: value for key, value in self._items.items() if value[1] > now
+            }
+            self._items[token] = (username, now + SESSION_TTL)
+        return token
+
+    def valid(self, token: str) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            item = self._items.get(token)
+            if not item or item[1] <= now:
+                self._items.pop(token, None)
+                return False
+        return True
+
+    def revoke(self, token: str) -> None:
+        with self._lock:
+            self._items.pop(token, None)
+
+    def revoke_all(self) -> None:
+        with self._lock:
+            self._items.clear()
+
+
+class LoginLimiter:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._failures: dict[str, tuple[int, float]] = {}
+
+    def allowed(self, address: str) -> tuple[bool, int]:
+        now = time.monotonic()
+        with self._lock:
+            attempts, blocked_until = self._failures.get(address, (0, 0))
+            if blocked_until > now:
+                return False, max(1, int(blocked_until - now))
+            if blocked_until:
+                self._failures.pop(address, None)
+        return True, 0
+
+    def fail(self, address: str) -> None:
+        now = time.monotonic()
+        with self._lock:
+            attempts, blocked_until = self._failures.get(address, (0, 0))
+            if blocked_until > now:
+                return
+            attempts += 1
+            if attempts >= 5:
+                self._failures[address] = (0, now + 60)
+            else:
+                self._failures[address] = (attempts, 0)
+
+    def success(self, address: str) -> None:
+        with self._lock:
+            self._failures.pop(address, None)
+
+
 NONCES = NonceStore()
+SESSIONS = SessionStore()
+LOGIN_LIMITER = LoginLimiter()
 
 
 class AdminHTTPServer(ThreadingHTTPServer):
@@ -386,7 +542,13 @@ class AdminHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: object) -> None:
         sys.stderr.write(f"[{self.log_date_time_string()}] {self.client_address[0]} {fmt % args}\n")
 
-    def _send_headers(self, status: int, content_type: str, length: int) -> None:
+    def _send_headers(
+        self,
+        status: int,
+        content_type: str,
+        length: int,
+        extra_headers: tuple[tuple[str, str], ...] = (),
+    ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(length))
@@ -401,16 +563,29 @@ class AdminHandler(BaseHTTPRequestHandler):
             "img-src 'self'; connect-src 'self'; base-uri 'none'; "
             "form-action 'self'; frame-ancestors 'none'",
         )
+        for name, value in extra_headers:
+            self.send_header(name, value)
         self.end_headers()
 
-    def send_bytes(self, status: int, content_type: str, body: bytes) -> None:
-        self._send_headers(status, content_type, len(body))
+    def send_bytes(
+        self,
+        status: int,
+        content_type: str,
+        body: bytes,
+        extra_headers: tuple[tuple[str, str], ...] = (),
+    ) -> None:
+        self._send_headers(status, content_type, len(body), extra_headers)
         if self.command != "HEAD":
             self.wfile.write(body)
 
-    def send_json(self, status: int, payload: dict[str, object]) -> None:
+    def send_json(
+        self,
+        status: int,
+        payload: dict[str, object],
+        extra_headers: tuple[tuple[str, str], ...] = (),
+    ) -> None:
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        self.send_bytes(status, "application/json; charset=utf-8", body)
+        self.send_bytes(status, "application/json; charset=utf-8", body, extra_headers)
 
     @property
     def allowed_networks(self) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
@@ -424,39 +599,64 @@ class AdminHandler(BaseHTTPRequestHandler):
         # a remote client cannot grant itself LAN access with a forged header.
         return address_is_allowed(self.client_address[0], self.allowed_networks)
 
-    def authorized(self) -> bool:
-        expected_user = os.environ["OVERSEAS_ADMIN_USER"]
-        expected_password = os.environ["OVERSEAS_ADMIN_PASSWORD"]
-        header = self.headers.get("Authorization", "")
-        if not header.startswith("Basic "):
-            return False
+    def session_token(self) -> str:
+        cookie_header = self.headers.get("Cookie", "")
         try:
-            decoded = base64.b64decode(header[6:], validate=True).decode("utf-8")
-            username, password = decoded.split(":", 1)
-        except (ValueError, UnicodeDecodeError, binascii.Error):
-            return False
-        return hmac.compare_digest(username, expected_user) and hmac.compare_digest(
-            password, expected_password
-        )
+            cookies = SimpleCookie()
+            cookies.load(cookie_header)
+            morsel = cookies.get(SESSION_COOKIE)
+            return morsel.value if morsel else ""
+        except Exception:
+            return ""
 
-    def authenticate_request(self) -> bool:
-        if not self.client_is_valid():
-            self.send_json(HTTPStatus.FORBIDDEN, {"ok": False, "message": "管理页只允许配置的内网地址访问"})
+    def authorized(self) -> bool:
+        return SESSIONS.valid(self.session_token())
+
+    def read_json_body(self, maximum: int = 16_384) -> dict[str, object]:
+        if self.headers.get_content_type() != "application/json":
+            raise AdminError("请求格式必须为 JSON")
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length <= 0 or length > maximum:
+            raise AdminError("请求大小不正确")
+        try:
+            payload = json.loads(self.rfile.read(length))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise AdminError("请求内容不是有效的 JSON") from exc
+        if not isinstance(payload, dict):
+            raise AdminError("请求格式不正确")
+        return payload
+
+    def set_session_cookie(self, token: str, max_age: int = SESSION_TTL) -> tuple[str, str]:
+        value = (
+            f"{SESSION_COOKIE}={token}; Path=/; Max-Age={max_age}; "
+            "HttpOnly; SameSite=Strict"
+        )
+        return "Set-Cookie", value
+
+    def serve_static(self, path: str) -> bool:
+        static_files = {
+            "/": ("index.html", "text/html; charset=utf-8"),
+            "/index.html": ("index.html", "text/html; charset=utf-8"),
+            "/login": ("login.html", "text/html; charset=utf-8"),
+            "/login.html": ("login.html", "text/html; charset=utf-8"),
+            "/app.css": ("app.css", "text/css; charset=utf-8"),
+            "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+            "/login.js": ("login.js", "text/javascript; charset=utf-8"),
+        }
+        selected = static_files.get(path)
+        if not selected:
             return False
-        if not self.request_host_is_valid():
-            self.send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "message": "请使用服务器的内网 IP 打开管理页"})
-            return False
-        if self.authorized():
+        filename, content_type = selected
+        try:
+            body = (STATIC_ROOT / filename).read_bytes()
+        except OSError:
+            self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": "管理页面资源缺失"})
             return True
-        body = b"Authentication required"
-        self.send_response(HTTPStatus.UNAUTHORIZED)
-        self.send_header("WWW-Authenticate", 'Basic realm="Overseas Cache Admin", charset="UTF-8"')
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
-        return False
+        self.send_bytes(HTTPStatus.OK, content_type, body)
+        return True
 
     def same_origin_is_valid(self) -> bool:
         return same_origin_is_allowed(
@@ -466,9 +666,33 @@ class AdminHandler(BaseHTTPRequestHandler):
         )
 
     def do_GET(self) -> None:  # noqa: N802
-        if not self.authenticate_request():
+        if not self.client_is_valid():
+            self.send_json(HTTPStatus.FORBIDDEN, {"ok": False, "message": "管理页只允许配置的内网地址访问"})
+            return
+        if not self.request_host_is_valid():
+            self.send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "message": "请使用服务器的内网 IP 打开管理页"})
             return
         path = urlsplit(self.path).path
+        if path in {"/login", "/login.html", "/app.css", "/login.js"}:
+            self.serve_static(path)
+            return
+        if path == "/api/session":
+            self.send_json(
+                HTTPStatus.OK,
+                {"ok": True, "authenticated": self.authorized()},
+            )
+            return
+        if not self.authorized():
+            if path.startswith("/api/"):
+                self.send_json(HTTPStatus.UNAUTHORIZED, {"ok": False, "message": "登录已过期，请重新登录"})
+            else:
+                self.send_bytes(
+                    HTTPStatus.SEE_OTHER,
+                    "text/plain; charset=utf-8",
+                    b"",
+                    (("Location", "/login"),),
+                )
+            return
         if path == "/api/config":
             try:
                 config = load_config()
@@ -487,49 +711,80 @@ class AdminHandler(BaseHTTPRequestHandler):
                     },
                 )
             except AdminError as exc:
-                self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": str(exc)})
+                self.send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {"ok": False, "message": str(exc), "csrfToken": NONCES.issue()},
+                )
             return
-
-        static_files = {
-            "/": ("index.html", "text/html; charset=utf-8"),
-            "/index.html": ("index.html", "text/html; charset=utf-8"),
-            "/app.css": ("app.css", "text/css; charset=utf-8"),
-            "/app.js": ("app.js", "text/javascript; charset=utf-8"),
-        }
-        selected = static_files.get(path)
-        if not selected:
+        if not self.serve_static(path):
             self.send_json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "页面不存在"})
-            return
-        filename, content_type = selected
-        try:
-            body = (STATIC_ROOT / filename).read_bytes()
-        except OSError:
-            self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": "管理页面资源缺失"})
-            return
-        self.send_bytes(HTTPStatus.OK, content_type, body)
 
     def do_POST(self) -> None:  # noqa: N802
-        if not self.authenticate_request():
+        if not self.client_is_valid():
+            self.send_json(HTTPStatus.FORBIDDEN, {"ok": False, "message": "管理页只允许配置的内网地址访问"})
             return
-        if urlsplit(self.path).path != "/api/config":
-            self.send_json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "接口不存在"})
+        if not self.request_host_is_valid():
+            self.send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "message": "请使用服务器的内网 IP 打开管理页"})
             return
         if not self.same_origin_is_valid():
             self.send_json(HTTPStatus.FORBIDDEN, {"ok": False, "message": "来源检查失败，请重新打开管理页"})
+            return
+        path = urlsplit(self.path).path
+        if path == "/api/login":
+            allowed, retry_after = LOGIN_LIMITER.allowed(self.client_address[0])
+            if not allowed:
+                self.send_json(
+                    HTTPStatus.TOO_MANY_REQUESTS,
+                    {"ok": False, "message": f"登录失败次数过多，请在 {retry_after} 秒后重试"},
+                    (("Retry-After", str(retry_after)),),
+                )
+                return
+            try:
+                payload = self.read_json_body(4096)
+            except AdminError as exc:
+                self.send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "message": str(exc)})
+                return
+            if not verify_credentials(payload.get("username"), payload.get("password")):
+                LOGIN_LIMITER.fail(self.client_address[0])
+                self.send_json(HTTPStatus.UNAUTHORIZED, {"ok": False, "message": "用户名或密码不正确"})
+                return
+            LOGIN_LIMITER.success(self.client_address[0])
+            token = SESSIONS.issue(str(payload.get("username")))
+            self.send_json(
+                HTTPStatus.OK,
+                {"ok": True, "message": "登录成功"},
+                (self.set_session_cookie(token),),
+            )
+            return
+        if not self.authorized():
+            self.send_json(HTTPStatus.UNAUTHORIZED, {"ok": False, "message": "登录已过期，请重新登录"})
+            return
+        if path == "/api/logout":
+            SESSIONS.revoke(self.session_token())
+            self.send_json(
+                HTTPStatus.OK,
+                {"ok": True, "message": "已退出登录"},
+                (self.set_session_cookie("", 0),),
+            )
+            return
+        if path not in {"/api/config", "/api/password"}:
+            self.send_json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "接口不存在"})
             return
         csrf_token = self.headers.get("X-CSRF-Token", "")
         if not NONCES.consume(csrf_token):
             self.send_json(HTTPStatus.FORBIDDEN, {"ok": False, "message": "页面已过期，请刷新后重试"})
             return
         try:
-            length = int(self.headers.get("Content-Length", "0"))
-        except ValueError:
-            length = 0
-        if length <= 0 or length > 16_384:
-            self.send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "message": "请求大小不正确"})
-            return
-        try:
-            payload = json.loads(self.rfile.read(length))
+            payload = self.read_json_body()
+            if path == "/api/password":
+                change_password(payload.get("currentPassword"), payload.get("newPassword"))
+                SESSIONS.revoke_all()
+                self.send_json(
+                    HTTPStatus.OK,
+                    {"ok": True, "message": "密码已修改，请使用新密码重新登录"},
+                    (self.set_session_cookie("", 0),),
+                )
+                return
             config, backup_dir, details = apply_config(payload)
             self.send_json(
                 HTTPStatus.OK,
@@ -547,7 +802,7 @@ class AdminHandler(BaseHTTPRequestHandler):
                     },
                 },
             )
-        except (json.JSONDecodeError, AdminError) as exc:
+        except AdminError as exc:
             self.send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "message": str(exc), "csrfToken": NONCES.issue()})
 
 
@@ -555,6 +810,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", default=23000, type=int)
+    parser.add_argument("--init-password-file", type=Path)
+    parser.add_argument("--username", default="admin")
     return parser.parse_args()
 
 
@@ -563,10 +820,25 @@ def main() -> int:
     if os.geteuid() != 0:
         print("This service must run as root so it can validate and reload Nginx.", file=sys.stderr)
         return 1
-    username = os.environ.get("OVERSEAS_ADMIN_USER", "")
-    password = os.environ.get("OVERSEAS_ADMIN_PASSWORD", "")
-    if not username or len(password) < 16:
-        print("OVERSEAS_ADMIN_USER and a 16+ character password are required.", file=sys.stderr)
+    if args.init_password_file:
+        password = sys.stdin.read(257)
+        if len(password) > 256:
+            print("Password is too long.", file=sys.stderr)
+            return 1
+        try:
+            atomic_write(
+                args.init_password_file,
+                render_password_record(args.username, password),
+                0o600,
+            )
+        except AdminError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        return 0
+    try:
+        read_password_record()
+    except AdminError as exc:
+        print(str(exc), file=sys.stderr)
         return 1
     try:
         allowed_networks = parse_allowed_networks(os.environ.get("OVERSEAS_ADMIN_ALLOWED_NETWORKS"))

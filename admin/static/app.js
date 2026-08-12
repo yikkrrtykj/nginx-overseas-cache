@@ -9,10 +9,28 @@ const statusPanel = document.querySelector(".status-panel");
 const statusIcon = document.querySelector("#statusIcon");
 const statusTitle = document.querySelector("#statusTitle");
 const statusMessage = document.querySelector("#statusMessage");
+const passwordButton = document.querySelector("#passwordButton");
+const logoutButton = document.querySelector("#logoutButton");
+const passwordDialog = document.querySelector("#passwordDialog");
+const passwordForm = document.querySelector("#passwordForm");
+const currentPassword = document.querySelector("#currentPassword");
+const newPassword = document.querySelector("#newPassword");
+const confirmPassword = document.querySelector("#confirmPassword");
+const passwordError = document.querySelector("#passwordError");
+const submitPassword = document.querySelector("#submitPassword");
+const cancelPassword = document.querySelector("#cancelPassword");
 
 const fields = ["originHost", "cdnHost", "channelId", "accountId"];
 let csrfToken = "";
-let originalConfig = null;
+
+async function parseResponse(response) {
+  const data = await response.json();
+  if (response.status === 401) {
+    window.location.replace("/login");
+    throw new Error("登录已过期");
+  }
+  return data;
+}
 
 function setStatus(kind, title, message) {
   statusPanel.className = `status-panel ${kind || ""}`.trim();
@@ -30,7 +48,6 @@ function currentPayload() {
 function fillForm(config) {
   fields.forEach((name) => { document.querySelector(`#${name}`).value = config[name] || ""; });
   tokenInput.value = "";
-  originalConfig = { ...config };
 }
 
 async function readConfig() {
@@ -38,9 +55,9 @@ async function readConfig() {
   setStatus("", "正在读取服务器配置", "旧 token 不会返回浏览器。");
   try {
     const response = await fetch("/api/config", { cache: "no-store", credentials: "same-origin" });
-    const data = await response.json();
+    const data = await parseResponse(response);
+    if (data.csrfToken) csrfToken = data.csrfToken;
     if (!response.ok || !data.ok) throw new Error(data.message || "读取失败");
-    csrfToken = data.csrfToken;
     fillForm(data.config);
     setStatus("success", "配置已就绪", "修改后点击“保存并应用”。留空 token 将保持服务器上的原值。 ");
   } catch (error) {
@@ -84,7 +101,7 @@ async function saveConfig(payload) {
       headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
       body: JSON.stringify(payload),
     });
-    const data = await response.json();
+    const data = await parseResponse(response);
     if (data.csrfToken) csrfToken = data.csrfToken;
     if (!response.ok || !data.ok) throw new Error(data.message || "保存失败");
     fillForm(data.config);
@@ -113,6 +130,61 @@ toggleToken.addEventListener("click", () => {
   tokenInput.type = show ? "text" : "password";
   toggleToken.textContent = show ? "隐藏" : "显示";
   tokenInput.focus();
+});
+
+passwordButton.addEventListener("click", () => {
+  passwordForm.reset();
+  passwordError.textContent = "";
+  passwordDialog.showModal();
+  currentPassword.focus();
+});
+
+cancelPassword.addEventListener("click", () => passwordDialog.close());
+
+passwordForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  passwordError.textContent = "";
+  if (!passwordForm.reportValidity()) return;
+  if (newPassword.value !== confirmPassword.value) {
+    passwordError.textContent = "两次输入的新密码不一致";
+    confirmPassword.focus();
+    return;
+  }
+  submitPassword.disabled = true;
+  try {
+    const response = await fetch("/api/password", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+      body: JSON.stringify({
+        currentPassword: currentPassword.value,
+        newPassword: newPassword.value,
+      }),
+    });
+    const data = await parseResponse(response);
+    if (data.csrfToken) csrfToken = data.csrfToken;
+    if (!response.ok || !data.ok) throw new Error(data.message || "密码修改失败");
+    passwordForm.reset();
+    window.location.replace("/login");
+  } catch (error) {
+    passwordError.textContent = error.message;
+  } finally {
+    submitPassword.disabled = false;
+  }
+});
+
+logoutButton.addEventListener("click", async () => {
+  logoutButton.disabled = true;
+  try {
+    await fetch("/api/logout", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+  } finally {
+    window.location.replace("/login");
+  }
 });
 
 readConfig();

@@ -16,6 +16,7 @@ install_dir=/opt/nginx-overseas-cache-admin
 config_dir=/etc/nginx/overseas-cache
 settings_file=$config_dir/settings.conf
 admin_env=$config_dir/admin.env
+password_file=$config_dir/admin-password.json
 upstream_target=/etc/nginx/conf.d/proxy-cache.conf
 site_target=/etc/nginx/sites-available/overseas-cache
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
@@ -37,8 +38,10 @@ done
 for source in \
     "$repo_dir/admin/server.py" \
     "$repo_dir/admin/static/index.html" \
+    "$repo_dir/admin/static/login.html" \
     "$repo_dir/admin/static/app.css" \
     "$repo_dir/admin/static/app.js" \
+    "$repo_dir/admin/static/login.js" \
     "$repo_dir/nginx/conf.d/proxy-cache.conf" \
     "$repo_dir/nginx/sites-available/overseas-cache" \
     "$repo_dir/systemd/overseas-cache-admin.service"; do
@@ -177,25 +180,42 @@ fi
 install -d -o root -g root -m 0755 "$install_dir" "$install_dir/static"
 install -o root -g root -m 0755 "$repo_dir/admin/server.py" "$install_dir/server.py"
 install -o root -g root -m 0644 "$repo_dir/admin/static/index.html" "$install_dir/static/index.html"
+install -o root -g root -m 0644 "$repo_dir/admin/static/login.html" "$install_dir/static/login.html"
 install -o root -g root -m 0644 "$repo_dir/admin/static/app.css" "$install_dir/static/app.css"
 install -o root -g root -m 0644 "$repo_dir/admin/static/app.js" "$install_dir/static/app.js"
+install -o root -g root -m 0644 "$repo_dir/admin/static/login.js" "$install_dir/static/login.js"
 
 new_credentials=0
-if [[ ! -f "$admin_env" ]]; then
-    admin_password=$(openssl rand -hex 20)
-    umask 077
-    {
-        printf 'OVERSEAS_ADMIN_USER=admin\n'
-        printf 'OVERSEAS_ADMIN_PASSWORD=%s\n' "$admin_password"
-        printf 'OVERSEAS_ADMIN_ALLOWED_NETWORKS=192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,127.0.0.0/8\n'
-    } > "$admin_env"
-    new_credentials=1
+if [[ ! -f "$password_file" ]]; then
+    admin_user=admin
+    admin_password=
+    if [[ -f "$admin_env" ]]; then
+        existing_user=$(sed -n 's/^OVERSEAS_ADMIN_USER=//p' "$admin_env" | head -n 1)
+        existing_password=$(sed -n 's/^OVERSEAS_ADMIN_PASSWORD=//p' "$admin_env" | head -n 1)
+        [[ -z "$existing_user" ]] || admin_user=$existing_user
+        [[ -z "$existing_password" ]] || admin_password=$existing_password
+    fi
+    if [[ -z "$admin_password" ]]; then
+        admin_password=$(openssl rand -hex 20)
+        new_credentials=1
+    fi
+    printf '%s' "$admin_password" | python3 "$repo_dir/admin/server.py" \
+        --init-password-file "$password_file" --username "$admin_user"
 fi
-if ! grep -q '^OVERSEAS_ADMIN_ALLOWED_NETWORKS=' "$admin_env"; then
-    printf 'OVERSEAS_ADMIN_ALLOWED_NETWORKS=192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,127.0.0.0/8\n' >> "$admin_env"
+
+allowed_networks=$(sed -n 's/^OVERSEAS_ADMIN_ALLOWED_NETWORKS=//p' "$admin_env" 2>/dev/null | head -n 1 || true)
+allowed_networks=${allowed_networks:-192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,127.0.0.0/8}
+umask 077
+printf 'OVERSEAS_ADMIN_ALLOWED_NETWORKS=%s\n' "$allowed_networks" > "$admin_env"
+
+for sensitive_file in "$admin_env" "$password_file"; do
+    chown root:root "$sensitive_file"
+    chmod 600 "$sensitive_file"
+done
+
+if [[ "$new_credentials" == 0 ]]; then
+    unset admin_password
 fi
-chown root:root "$admin_env"
-chmod 600 "$admin_env"
 
 install -o root -g root -m 0644 \
     "$repo_dir/systemd/overseas-cache-admin.service" \
@@ -217,7 +237,7 @@ if [[ "$new_credentials" == 1 ]]; then
     printf '   Username: admin\n'
     printf '   Password: %s\n' "$admin_password"
 else
-    printf '2. Existing credentials were preserved. To view them on the server:\n'
-    printf '   sudo cat %s\n' "$admin_env"
+    printf '2. Existing username and password were preserved.\n'
 fi
-printf '\nThe panel accepts configured private networks only. Do not forward TCP 23000 to the Internet.\n'
+printf '\nUse the web console to change the password. The stored password is hashed and cannot be displayed.\n'
+printf 'The panel accepts configured private networks only. Do not forward TCP 23000 to the Internet.\n'

@@ -103,13 +103,28 @@ sudo bash scripts/install-admin.sh
 
 安装程序会备份并部署仓库中的最新 Nginx 配置。如果当前 channel/account/token 仍直接写在旧的站点配置中，安装程序会尝试自动迁移到权限为 `0600` 的 `settings.conf`。
 
-安装完成后，它会显示随机生成的管理密码。管理服务监听 `23000` 端口，但程序只接受私有内网网段，并且仍然要求用户名和密码。内网电脑直接访问：
+安装完成后，新安装会显示随机生成的管理密码。管理服务监听 `23000` 端口，但程序只接受私有内网网段，并且仍然要求用户名和密码。内网电脑直接访问：
 
 ```text
 http://192.168.16.23:23000
 ```
 
-使用安装程序显示的用户名和密码登录。管理页不会读取并显示原 token；token 输入框留空时会保持服务器上的当前值。每次保存都会自动备份、执行 `nginx -t` 并重新加载，失败会恢复旧配置。
+浏览器会显示专用登录页面。使用安装程序显示的用户名和密码登录；如果从旧版升级，原来的用户名和密码会自动保留。登录后点击右上角“修改密码”，输入当前密码和至少 12 位的新密码即可。修改成功会让所有浏览器退出登录，随后使用新密码重新进入。
+
+密码使用 PBKDF2 哈希保存在权限为 `0600` 的 `/etc/nginx/overseas-cache/admin-password.json` 中，不能从服务器反向查看明文。管理页不会读取并显示原 token；token 输入框留空时会保持服务器上的当前值。每次保存都会自动备份、执行 `nginx -t` 并重新加载，失败会恢复旧配置。
+
+忘记密码时，可以在服务器仓库目录重新设置，下面示例会设置为 `你的新密码`：
+
+```bash
+read -rsp '请输入新密码: ' OVERSEAS_NEW_PASSWORD; echo
+printf '%s' "$OVERSEAS_NEW_PASSWORD" | sudo python3 admin/server.py \
+  --init-password-file /etc/nginx/overseas-cache/admin-password.json \
+  --username admin
+unset OVERSEAS_NEW_PASSWORD
+sudo systemctl restart overseas-cache-admin
+```
+
+新密码需要至少 12 位。输入内容不会显示，也不会把密码本身写进 shell 历史记录。
 
 管理面板的服务状态和日志：
 
