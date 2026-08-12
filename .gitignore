@@ -1,0 +1,16 @@
+# Local secrets: never commit the real channel token.
+settings.conf
+*.key
+*.pem
+
+# Runtime data and logs.
+cache/
+logs/
+*.log
+
+# Editor and OS files.
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+

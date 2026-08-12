@@ -1,0 +1,220 @@
+server {
+    listen 23333 default_server;
+    listen [::]:23333 default_server;
+
+    server_name _;
+
+    keepalive_timeout 65;
+    client_max_body_size 20m;
+
+    # This file exists only on the server and contains channel/account/token.
+    include /etc/nginx/overseas-cache/settings.conf;
+
+    # Keep the browser on the local Nginx address.
+    location = / {
+        return 302 "http://$http_host/render?rendererMode=onair&channelId=$render_channel&token=$render_token&accountId=$render_account";
+    }
+
+    # Cache fingerprinted JavaScript. This regex must be allowed to take
+    # precedence over the ordinary /templates-auth/ prefix below.
+    location ~* ^/templates-auth/.*/static/js/.*\.js$ {
+        proxy_pass https://webcoder_origin;
+
+        proxy_ssl_server_name on;
+        proxy_ssl_name webcoder.atum.live;
+        proxy_ssl_session_reuse on;
+
+        proxy_set_header Host webcoder.atum.live;
+        proxy_set_header Origin https://webcoder.atum.live;
+        proxy_set_header Referer https://webcoder.atum.live/;
+
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_socket_keepalive on;
+
+        proxy_connect_timeout 10s;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+
+        proxy_buffering on;
+        proxy_buffer_size 16k;
+        proxy_buffers 16 64k;
+        proxy_busy_buffers_size 128k;
+
+        proxy_cache web_cache;
+        proxy_cache_methods GET HEAD;
+        proxy_cache_key "$proxy_host$request_uri";
+
+        proxy_ignore_headers Cache-Control Expires Set-Cookie;
+        proxy_hide_header Cache-Control;
+        proxy_hide_header Expires;
+        proxy_hide_header Set-Cookie;
+
+        proxy_cache_valid 200 1d;
+        proxy_cache_valid 301 302 1h;
+        proxy_cache_valid 404 10m;
+        proxy_cache_lock on;
+        proxy_cache_lock_timeout 10s;
+        proxy_cache_revalidate on;
+        proxy_cache_background_update on;
+        proxy_cache_use_stale error timeout invalid_header updating
+                              http_500 http_502 http_503 http_504;
+
+        add_header Cache-Control "public, max-age=3600" always;
+        add_header X-Cache-Status $upstream_cache_status always;
+    }
+
+    # CDN-hosted templates, images, fonts and media.
+    location ^~ /templates/ {
+        proxy_pass https://webcoder_cdn;
+
+        proxy_ssl_server_name on;
+        proxy_ssl_name webcodercdn.atum.live;
+        proxy_ssl_session_reuse on;
+
+        proxy_set_header Host webcodercdn.atum.live;
+        proxy_set_header Origin https://webcoder.atum.live;
+        proxy_set_header Referer https://webcoder.atum.live/;
+
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_socket_keepalive on;
+
+        proxy_connect_timeout 10s;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+
+        proxy_buffering on;
+        proxy_buffer_size 16k;
+        proxy_buffers 16 64k;
+        proxy_busy_buffers_size 128k;
+
+        # Address rewriting requires an uncompressed upstream response.
+        proxy_set_header Accept-Encoding "";
+
+        sub_filter_once off;
+        sub_filter_types text/css text/javascript application/javascript
+                         application/json application/manifest+json;
+        sub_filter 'https://webcoder.atum.live' 'http://$http_host';
+        sub_filter 'https://webcodercdn.atum.live' 'http://$http_host';
+        sub_filter 'wss://webcoder.atum.live' 'ws://$http_host';
+
+        proxy_redirect https://webcodercdn.atum.live/ http://$http_host/;
+
+        proxy_cache web_cache;
+        proxy_cache_methods GET HEAD;
+        proxy_cache_key "$proxy_host$request_uri";
+        proxy_ignore_headers Set-Cookie;
+        proxy_hide_header Set-Cookie;
+
+        proxy_cache_valid 200 1d;
+        proxy_cache_valid 206 1d;
+        proxy_cache_valid 301 302 1h;
+        proxy_cache_valid 404 10m;
+        proxy_cache_lock on;
+        proxy_cache_lock_timeout 10s;
+        proxy_cache_revalidate on;
+        proxy_cache_background_update on;
+        proxy_cache_use_stale error timeout invalid_header updating
+                              http_500 http_502 http_503 http_504;
+
+        proxy_hide_header Access-Control-Allow-Origin;
+        proxy_hide_header Access-Control-Allow-Methods;
+        proxy_hide_header Access-Control-Allow-Headers;
+        add_header Access-Control-Allow-Origin $cors_allow_origin always;
+        add_header Access-Control-Allow-Methods
+                   "GET, POST, OPTIONS, PUT, DELETE" always;
+        add_header Access-Control-Allow-Headers
+                   "Origin, X-Requested-With, Content-Type, Accept, Authorization, Range"
+                   always;
+        add_header X-Cache-Status $upstream_cache_status always;
+        add_header Accept-Ranges bytes always;
+    }
+
+    # Authenticated template documents and non-fingerprinted assets remain
+    # dynamic. Do not add ^~ here; the static-JS regex above must still match.
+    location /templates-auth/ {
+        proxy_pass https://webcoder_origin;
+
+        proxy_ssl_server_name on;
+        proxy_ssl_name webcoder.atum.live;
+        proxy_ssl_session_reuse on;
+
+        proxy_set_header Host webcoder.atum.live;
+        proxy_set_header Origin https://webcoder.atum.live;
+        proxy_set_header Referer https://webcoder.atum.live/;
+
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_socket_keepalive on;
+
+        proxy_connect_timeout 10s;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+
+        proxy_cache off;
+        proxy_buffering off;
+
+        proxy_redirect https://webcoder.atum.live/ http://$http_host/;
+        proxy_redirect http://webcoder.atum.live/ http://$http_host/;
+
+        proxy_set_header Accept-Encoding "";
+        sub_filter_once off;
+        sub_filter_types text/css text/javascript application/javascript
+                         application/json application/manifest+json;
+        sub_filter 'https://webcoder.atum.live' 'http://$http_host';
+        sub_filter 'https://webcodercdn.atum.live' 'http://$http_host';
+        sub_filter 'wss://webcoder.atum.live' 'ws://$http_host';
+
+        proxy_hide_header Content-Security-Policy;
+        proxy_hide_header Content-Security-Policy-Report-Only;
+
+        proxy_cookie_domain webcoder.atum.live $host;
+        proxy_cookie_domain .atum.live $host;
+        proxy_cookie_flags ~ nosecure samesite=lax;
+    }
+
+    # Main documents, APIs and WebSocket. Live traffic is never cached.
+    location / {
+        proxy_pass https://webcoder_origin;
+
+        proxy_ssl_server_name on;
+        proxy_ssl_name webcoder.atum.live;
+        proxy_ssl_session_reuse on;
+
+        proxy_set_header Host webcoder.atum.live;
+        proxy_set_header Origin https://webcoder.atum.live;
+        proxy_set_header Referer https://webcoder.atum.live/;
+
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_socket_keepalive on;
+
+        proxy_connect_timeout 10s;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+
+        proxy_cache off;
+        proxy_buffering off;
+
+        proxy_redirect https://webcoder.atum.live/ http://$http_host/;
+        proxy_redirect http://webcoder.atum.live/ http://$http_host/;
+
+        proxy_set_header Accept-Encoding "";
+        sub_filter_once off;
+        sub_filter_types text/css text/javascript application/javascript
+                         application/json application/manifest+json;
+        sub_filter 'https://webcoder.atum.live' 'http://$http_host';
+        sub_filter 'https://webcodercdn.atum.live' 'http://$http_host';
+        sub_filter 'wss://webcoder.atum.live' 'ws://$http_host';
+
+        proxy_hide_header Content-Security-Policy;
+        proxy_hide_header Content-Security-Policy-Report-Only;
+
+        proxy_cookie_domain webcoder.atum.live $host;
+        proxy_cookie_domain .atum.live $host;
+        proxy_cookie_flags ~ nosecure samesite=lax;
+    }
+}

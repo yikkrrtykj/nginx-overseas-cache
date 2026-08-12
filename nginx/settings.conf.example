@@ -1,0 +1,7 @@
+# Copy this file to /etc/nginx/overseas-cache/settings.conf on the server.
+# Never commit the real settings.conf because the token is sensitive.
+
+set $render_channel "pgs26_p";
+set $render_account "pgs26p";
+set $render_token   "REPLACE_WITH_REAL_TOKEN";
+
