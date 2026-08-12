@@ -1,5 +1,9 @@
 # Local secrets: never commit the real channel token.
 settings.conf
+admin.env
+.env
+.env.*
+!.env.example
 *.key
 *.pem
 

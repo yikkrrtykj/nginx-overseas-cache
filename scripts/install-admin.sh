@@ -71,17 +71,32 @@ valid_hostname() {
     [[ $host =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]
 }
 
+escape_sed_pattern() {
+    printf '%s' "$1" | sed 's/[][\\.^$*+?{}|()\/]/\\&/g'
+}
+
 if [[ -f "$upstream_target" ]]; then
     current_origin=$(read_upstream_host "$upstream_target" webcoder_origin)
     current_cdn=$(read_upstream_host "$upstream_target" webcoder_cdn)
+    staged_origin=$(read_upstream_host "$staged_upstream" webcoder_origin)
+    staged_cdn=$(read_upstream_host "$staged_upstream" webcoder_cdn)
     [[ -n "$current_origin" && -n "$current_cdn" ]] || die "could not read the current upstream domains"
+    [[ -n "$staged_origin" && -n "$staged_cdn" ]] || die "could not read the repository upstream domains"
     valid_hostname "$current_origin" || die "the current origin is not a supported hostname: $current_origin"
     valid_hostname "$current_cdn" || die "the current CDN is not a supported hostname: $current_cdn"
 
-    sed -i 's/webcodercdn\.atum\.live/cdn-placeholder.invalid/g' "$staged_upstream"
-    sed -i 's/webcoder\.atum\.live/origin-placeholder.invalid/g' "$staged_upstream"
-    sed -i "s/cdn-placeholder\.invalid/$current_cdn/g" "$staged_upstream"
-    sed -i "s/origin-placeholder\.invalid/$current_origin/g" "$staged_upstream"
+    staged_origin_pattern=$(escape_sed_pattern "$staged_origin")
+    staged_cdn_pattern=$(escape_sed_pattern "$staged_cdn")
+    if [[ "$staged_origin" == "$staged_cdn" ]]; then
+        [[ "$current_origin" == "$current_cdn" ]] || die "repository defaults use one hostname but the server uses separate origin and CDN hosts"
+        sed -i "s/$staged_origin_pattern/origin-placeholder.invalid/g" "$staged_upstream"
+        sed -i "s/origin-placeholder\.invalid/$current_origin/g" "$staged_upstream"
+    else
+        sed -i "s/$staged_cdn_pattern/cdn-placeholder.invalid/g" "$staged_upstream"
+        sed -i "s/$staged_origin_pattern/origin-placeholder.invalid/g" "$staged_upstream"
+        sed -i "s/cdn-placeholder\.invalid/$current_cdn/g" "$staged_upstream"
+        sed -i "s/origin-placeholder\.invalid/$current_origin/g" "$staged_upstream"
+    fi
 fi
 
 mkdir -p "$config_dir" "$config_dir/backups" "$install_backup"
@@ -172,12 +187,12 @@ if [[ ! -f "$admin_env" ]]; then
     {
         printf 'OVERSEAS_ADMIN_USER=admin\n'
         printf 'OVERSEAS_ADMIN_PASSWORD=%s\n' "$admin_password"
-        printf 'OVERSEAS_ADMIN_ALLOWED_NETWORKS=192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,127.0.0.0/8,::1/128,fc00::/7,fe80::/10\n'
+        printf 'OVERSEAS_ADMIN_ALLOWED_NETWORKS=192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,127.0.0.0/8\n'
     } > "$admin_env"
     new_credentials=1
 fi
 if ! grep -q '^OVERSEAS_ADMIN_ALLOWED_NETWORKS=' "$admin_env"; then
-    printf 'OVERSEAS_ADMIN_ALLOWED_NETWORKS=192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,127.0.0.0/8,::1/128,fc00::/7,fe80::/10\n' >> "$admin_env"
+    printf 'OVERSEAS_ADMIN_ALLOWED_NETWORKS=192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,127.0.0.0/8\n' >> "$admin_env"
 fi
 chown root:root "$admin_env"
 chmod 600 "$admin_env"

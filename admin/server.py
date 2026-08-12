@@ -50,9 +50,6 @@ DEFAULT_ALLOWED_NETWORKS = (
     "10.0.0.0/8",
     "172.16.0.0/12",
     "127.0.0.0/8",
-    "::1/128",
-    "fc00::/7",
-    "fe80::/10",
 )
 
 
@@ -70,7 +67,7 @@ class CurrentConfig:
 
 
 def parse_allowed_networks(value: str | None) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
-    entries = value.split(",") if value else DEFAULT_ALLOWED_NETWORKS
+    entries = DEFAULT_ALLOWED_NETWORKS if value is None else value.split(",")
     networks = []
     for entry in entries:
         normalized = entry.strip()
@@ -103,14 +100,49 @@ def host_is_allowed(
     networks: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...],
 ) -> bool:
     try:
-        hostname = urlsplit(f"//{host_header}").hostname
+        parsed = urlsplit(f"//{host_header}")
+        hostname = parsed.hostname
     except ValueError:
         return False
-    if not hostname:
+    if (
+        not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+    ):
         return False
     if hostname.lower() == "localhost":
         return address_is_allowed("127.0.0.1", networks)
     return address_is_allowed(hostname, networks)
+
+
+def same_origin_is_allowed(
+    origin: str,
+    host_header: str,
+    networks: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...],
+) -> bool:
+    if not origin:
+        return False
+    try:
+        parsed_origin = urlsplit(origin)
+        parsed_host = urlsplit(f"//{host_header}")
+        origin_port = parsed_origin.port or 80
+        host_port = parsed_host.port or 80
+    except ValueError:
+        return False
+    return (
+        parsed_origin.scheme == "http"
+        and parsed_origin.username is None
+        and parsed_origin.password is None
+        and parsed_origin.path in ("", "/")
+        and not parsed_origin.query
+        and not parsed_origin.fragment
+        and parsed_origin.hostname == parsed_host.hostname
+        and origin_port == host_port
+        and host_is_allowed(host_header, networks)
+    )
 
 
 def run_checked(command: list[str], timeout: int) -> str:
@@ -203,7 +235,7 @@ def replace_exact(text: str, pattern: re.Pattern[str], replacement: str, label: 
     return updated
 
 
-def update_upstream_text(text: str, current: CurrentConfig, origin: str, cdn: str) -> str:
+def update_upstream_text(text: str, origin: str, cdn: str) -> str:
     groups = (("webcoder_origin", origin), ("webcoder_cdn", cdn))
     for group, host in groups:
         pattern = re.compile(
@@ -288,7 +320,7 @@ def apply_config(payload: dict[str, object]) -> tuple[CurrentConfig, Path | None
         backup_dir = backup_files()
         try:
             upstream_text = update_upstream_text(
-                read_text(UPSTREAM_CONFIG), current, desired.origin_host, desired.cdn_host
+                read_text(UPSTREAM_CONFIG), desired.origin_host, desired.cdn_host
             )
             atomic_write(UPSTREAM_CONFIG, upstream_text, 0o644)
             atomic_write(
@@ -299,13 +331,15 @@ def apply_config(payload: dict[str, object]) -> tuple[CurrentConfig, Path | None
             validation_output = run_checked(["/usr/sbin/nginx", "-t"], timeout=20)
             run_checked(["/usr/bin/systemctl", "reload", "nginx"], timeout=30)
         except Exception as exc:
-            restore_backup(backup_dir)
-            rollback_details = []
             try:
-                rollback_details.append(run_checked(["/usr/sbin/nginx", "-t"], timeout=20))
-                rollback_details.append(run_checked(["/usr/bin/systemctl", "reload", "nginx"], timeout=30))
-            except Exception as rollback_exc:  # pragma: no cover - catastrophic host failure
-                rollback_details.append(f"恢复后重新加载失败：{rollback_exc}")
+                restore_backup(backup_dir)
+                run_checked(["/usr/sbin/nginx", "-t"], timeout=20)
+                run_checked(["/usr/bin/systemctl", "reload", "nginx"], timeout=30)
+            except Exception as rollback_exc:
+                raise AdminError(
+                    "保存失败，并且自动恢复未能完成。请立即在服务器检查 Nginx。\n"
+                    f"保存错误：{exc}\n恢复错误：{rollback_exc}\n备份：{backup_dir}"
+                ) from exc
             raise AdminError(f"保存失败，已经恢复旧配置。\n{exc}") from exc
 
         return desired, backup_dir, validation_output
@@ -332,6 +366,17 @@ class NonceStore:
 
 
 NONCES = NonceStore()
+
+
+class AdminHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+    request_queue_size = 32
+
+    def get_request(self):  # type: ignore[no-untyped-def]
+        socket, address = super().get_request()
+        socket.settimeout(20)
+        return socket, address
 
 
 class AdminHandler(BaseHTTPRequestHandler):
@@ -414,20 +459,11 @@ class AdminHandler(BaseHTTPRequestHandler):
         return False
 
     def same_origin_is_valid(self) -> bool:
-        origin = self.headers.get("Origin", "")
-        if not origin:
-            return False
-        try:
-            parsed = urlsplit(origin)
-            host = urlsplit(f"//{self.headers.get('Host', '')}")
-            return (
-                parsed.scheme == "http"
-                and parsed.hostname == host.hostname
-                and parsed.port == host.port
-                and host_is_allowed(self.headers.get("Host", ""), self.allowed_networks)
-            )
-        except ValueError:
-            return False
+        return same_origin_is_allowed(
+            self.headers.get("Origin", ""),
+            self.headers.get("Host", ""),
+            self.allowed_networks,
+        )
 
     def do_GET(self) -> None:  # noqa: N802
         if not self.authenticate_request():
@@ -537,9 +573,8 @@ def main() -> int:
     except AdminError as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    server = ThreadingHTTPServer((args.host, args.port), AdminHandler)
+    server = AdminHTTPServer((args.host, args.port), AdminHandler)
     server.allowed_networks = allowed_networks  # type: ignore[attr-defined]
-    server.daemon_threads = True
     print(f"Overseas Cache Admin listening on http://{args.host}:{args.port}", flush=True)
     try:
         server.serve_forever()

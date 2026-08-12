@@ -56,7 +56,7 @@ class AdminConfigTests(unittest.TestCase):
 
     def test_update_upstream_text_changes_servers_and_maps(self):
         updated = admin.update_upstream_text(
-            UPSTREAM_FIXTURE, self.current, "new-origin.example", "new-cdn.example"
+            UPSTREAM_FIXTURE, "new-origin.example", "new-cdn.example"
         )
         self.assertNotIn("old-origin.example", updated)
         self.assertNotIn("old-cdn.example", updated)
@@ -67,7 +67,6 @@ class AdminConfigTests(unittest.TestCase):
         with self.assertRaises(admin.AdminError):
             admin.update_upstream_text(
                 "upstream webcoder_origin { server old-origin.example:443; }",
-                self.current,
                 "new-origin.example",
                 "new-cdn.example",
             )
@@ -95,6 +94,8 @@ class AdminConfigTests(unittest.TestCase):
         self.assertFalse(admin.address_is_allowed("8.8.8.8", networks))
         self.assertTrue(admin.host_is_allowed("192.168.16.23:23000", networks))
         self.assertFalse(admin.host_is_allowed("8.8.8.8:23000", networks))
+        self.assertFalse(admin.host_is_allowed("user@192.168.16.23:23000", networks))
+        self.assertFalse(admin.host_is_allowed("192.168.16.23:23000/path", networks))
 
     def test_custom_admin_networks_are_enforced(self):
         networks = admin.parse_allowed_networks("192.168.16.0/24, 127.0.0.1/32")
@@ -102,6 +103,38 @@ class AdminConfigTests(unittest.TestCase):
         self.assertFalse(admin.address_is_allowed("192.168.60.92", networks))
         with self.assertRaises(admin.AdminError):
             admin.parse_allowed_networks("not-a-network")
+        with self.assertRaises(admin.AdminError):
+            admin.parse_allowed_networks("")
+
+    def test_same_origin_validation_is_strict(self):
+        networks = admin.parse_allowed_networks(None)
+        self.assertTrue(
+            admin.same_origin_is_allowed(
+                "http://192.168.16.23:23000", "192.168.16.23:23000", networks
+            )
+        )
+        self.assertTrue(
+            admin.same_origin_is_allowed("http://192.168.16.23", "192.168.16.23:80", networks)
+        )
+        for origin in (
+            "https://192.168.16.23:23000",
+            "http://192.168.60.92:23000",
+            "http://user@192.168.16.23:23000",
+            "http://192.168.16.23:23000/path",
+        ):
+            with self.subTest(origin=origin):
+                self.assertFalse(
+                    admin.same_origin_is_allowed(origin, "192.168.16.23:23000", networks)
+                )
+
+    def test_nginx_safe_log_does_not_record_request_paths(self):
+        config = (MODULE_PATH.parents[1] / "nginx" / "conf.d" / "proxy-cache.conf").read_text(
+            encoding="utf-8"
+        )
+        log_format = config.split("log_format overseas_cache_safe", 1)[1].split(";", 1)[0]
+        self.assertNotIn("$uri", log_format)
+        self.assertNotIn("$request_uri", log_format)
+        self.assertIn("$overseas_log_route", log_format)
 
     def test_settings_round_trip_and_no_shell_syntax(self):
         content = admin.render_settings("channel_1", "account-1", "secure_token-123")
@@ -170,6 +203,51 @@ class AdminConfigTests(unittest.TestCase):
                 updated = paths["UPSTREAM_CONFIG"].read_text(encoding="utf-8")
                 self.assertIn("new-origin.example", updated)
                 self.assertIn("new-cdn.example", updated)
+            finally:
+                for name, value in originals.items():
+                    setattr(admin, name, value)
+                admin.run_checked = original_run_checked
+                if original_chown is None:
+                    delattr(admin.os, "chown")
+                else:
+                    admin.os.chown = original_chown
+
+    def test_apply_config_reports_failed_rollback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = {
+                "UPSTREAM_CONFIG": root / "proxy-cache.conf",
+                "SITE_CONFIG": root / "overseas-cache",
+                "SETTINGS_CONFIG": root / "settings.conf",
+                "BACKUP_ROOT": root / "backups",
+                "LOCK_FILE": root / "admin.lock",
+            }
+            originals = {name: getattr(admin, name) for name in paths}
+            original_chown = getattr(admin.os, "chown", None)
+            original_run_checked = admin.run_checked
+            try:
+                for name, path in paths.items():
+                    setattr(admin, name, path)
+                paths["UPSTREAM_CONFIG"].write_text(UPSTREAM_FIXTURE, encoding="utf-8")
+                paths["SITE_CONFIG"].write_text("server {}\n", encoding="utf-8")
+                paths["SETTINGS_CONFIG"].write_text(
+                    admin.render_settings("channel_1", "account.1", "secret-token"), encoding="utf-8"
+                )
+                admin.os.chown = lambda *_args: None
+                admin.run_checked = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                    admin.AdminError("simulated nginx failure")
+                )
+
+                with self.assertRaisesRegex(admin.AdminError, "自动恢复未能完成"):
+                    admin.apply_config(
+                        {
+                            "originHost": "new-origin.example",
+                            "cdnHost": "new-cdn.example",
+                            "channelId": "channel_2",
+                            "accountId": "account.2",
+                            "token": "",
+                        }
+                    )
             finally:
                 for name, value in originals.items():
                     setattr(admin, name, value)

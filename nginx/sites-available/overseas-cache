@@ -5,20 +5,37 @@ server {
     server_name _;
 
     server_tokens off;
+    absolute_redirect off;
     keepalive_timeout 65;
     client_max_body_size 20m;
+    add_header Referrer-Policy "no-referrer" always;
 
-    # This format deliberately omits query strings and Referer values so the
-    # channel token is not written to the normal access log.
+    # The renderer is an internal service and its URL contains a token. Reject
+    # public source addresses even if a firewall rule is accidentally widened.
+    allow 10.0.0.0/8;
+    allow 172.16.0.0/12;
+    allow 192.168.0.0/16;
+    allow 127.0.0.0/8;
+    allow ::1/128;
+    allow fc00::/7;
+    allow fe80::/10;
+    deny all;
+
+    # This format deliberately omits paths, query strings and Referer values so
+    # the channel token is not written to the normal access log.
     access_log /var/log/nginx/overseas-cache.access.log overseas_cache_safe;
-    error_log  /var/log/nginx/overseas-cache.error.log warn;
+    # Upstream errors may include the request path, so keep this at critical
+    # severity to minimize accidental token exposure in routine error logs.
+    error_log  /var/log/nginx/overseas-cache.error.log crit;
 
     # This file exists only on the server and contains channel/account/token.
     include /etc/nginx/overseas-cache/settings.conf;
 
     # Keep the browser on the local Nginx address.
     location = / {
-        return 302 "http://$http_host/render?rendererMode=onair&channelId=$render_channel&token=$render_token&accountId=$render_account";
+        add_header Cache-Control "no-store" always;
+        add_header Referrer-Policy "no-referrer" always;
+        return 302 "/render?rendererMode=onair&channelId=$render_channel&token=$render_token&accountId=$render_account";
     }
 
     # Cache fingerprinted JavaScript. This regex must be allowed to take

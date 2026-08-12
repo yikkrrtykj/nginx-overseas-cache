@@ -118,7 +118,7 @@ sudo systemctl status overseas-cache-admin
 sudo journalctl -u overseas-cache-admin -n 100 --no-pager
 ```
 
-默认允许的管理网段为 `192.168.0.0/16`、`10.0.0.0/8`、`172.16.0.0/12`、本机回环和 IPv6 私有地址。需要收紧范围时，编辑 `/etc/nginx/overseas-cache/admin.env` 中的 `OVERSEAS_ADMIN_ALLOWED_NETWORKS`，多个网段使用英文逗号分隔，然后执行 `sudo systemctl restart overseas-cache-admin`。
+默认允许的管理网段为 `192.168.0.0/16`、`10.0.0.0/8`、`172.16.0.0/12` 和本机回环。需要收紧范围时，编辑 `/etc/nginx/overseas-cache/admin.env` 中的 `OVERSEAS_ADMIN_ALLOWED_NETWORKS`，多个网段使用英文逗号分隔，然后执行 `sudo systemctl restart overseas-cache-admin`。
 
 > 管理页使用 HTTP，登录密码和新 token 在内网传输时不加密。它只适用于可信局域网，绝不能在路由器上映射或向公网开放 TCP 23000。
 
@@ -175,7 +175,13 @@ sudo bash scripts/change-upstreams.sh api.example.com cdn.example.com
 /var/log/nginx/overseas-cache.access.log
 ```
 
-该日志不记录 URL 查询参数或 Referer，避免把 channel token 写入普通访问日志。浏览器地址栏、历史记录及页面自身请求仍可能包含 token，因此 23333 端口必须只允许可信内网访问。
+该日志只记录 `render`、`templates` 等请求类别，不记录具体路径、URL 查询参数或 Referer，避免把 channel token 写入普通访问日志。浏览器地址栏、历史记录及页面自身请求仍可能包含 token，因此 23333 端口必须只允许可信内网访问；Nginx 配置本身也会拒绝来自公共地址的连接。
+
+如果服务器使用过旧版配置，旧访问日志中可能已经存在 `/templates-auth/.../<token>/...` 路径。升级并确认新配置生效后，可以清空旧日志：
+
+```bash
+sudo truncate -s 0 /var/log/nginx/overseas-cache.access.log /var/log/nginx/overseas-cache.error.log
+```
 
 清除 Nginx 静态缓存时，应先确认路径准确，再执行：
 

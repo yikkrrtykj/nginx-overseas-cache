@@ -80,7 +80,8 @@ fi
 
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
 backup_dir="$backup_root/$timestamp"
-mkdir -p "$backup_dir"
+umask 077
+install -d -m 0700 "$backup_root" "$backup_dir"
 cp -a "$upstream_config" "$backup_dir/proxy-cache.conf"
 cp -a "$site_config" "$backup_dir/overseas-cache"
 
