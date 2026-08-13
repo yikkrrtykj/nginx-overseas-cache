@@ -43,8 +43,13 @@ for source in \
     "$repo_dir/admin/static/app.js" \
     "$repo_dir/admin/static/login.js" \
     "$repo_dir/nginx/conf.d/proxy-cache.conf" \
+    "$repo_dir/nginx/settings.conf.example" \
     "$repo_dir/nginx/sites-available/overseas-cache" \
-    "$repo_dir/systemd/overseas-cache-admin.service"; do
+    "$repo_dir/systemd/overseas-cache-admin.service" \
+    "$repo_dir/systemd/ws-fanout.service" \
+    "$repo_dir/ws-fanout/ws_fanout.py" \
+    "$repo_dir/ws-fanout/requirements.txt" \
+    "$repo_dir/scripts/install-ws-fanout.sh"; do
     [[ -f "$source" ]] || die "repository file is missing: $source"
 done
 
@@ -106,29 +111,33 @@ mkdir -p "$config_dir" "$config_dir/backups" "$install_backup"
 chmod 700 "$config_dir" "$config_dir/backups" "$install_backup"
 
 if [[ ! -f "$settings_file" ]]; then
-    [[ -f "$site_target" ]] || die "cannot migrate settings because $site_target is missing"
+    if [[ -f "$site_target" ]]; then
+        extract_setting() {
+            local variable=$1
+            sed -nE "s/^[[:space:]]*set[[:space:]]+\\\$$variable[[:space:]]+\"([^\"]*)\"[[:space:]]*;.*/\\1/p" "$site_target" | head -n 1
+        }
 
-    extract_setting() {
-        local variable=$1
-        sed -nE "s/^[[:space:]]*set[[:space:]]+\\\$$variable[[:space:]]+\"([^\"]*)\"[[:space:]]*;.*/\\1/p" "$site_target" | head -n 1
-    }
+        existing_channel=$(extract_setting render_channel)
+        existing_account=$(extract_setting render_account)
+        existing_token=$(extract_setting render_token)
 
-    existing_channel=$(extract_setting render_channel)
-    existing_account=$(extract_setting render_account)
-    existing_token=$(extract_setting render_token)
+        if [[ -z "$existing_channel" || -z "$existing_account" || -z "$existing_token" ]]; then
+            die "could not migrate channel/account/token; create $settings_file from nginx/settings.conf.example first"
+        fi
 
-    if [[ -z "$existing_channel" || -z "$existing_account" || -z "$existing_token" ]]; then
-        die "could not migrate channel/account/token; create $settings_file from nginx/settings.conf.example first"
+        umask 077
+        {
+            printf '# Migrated by install-admin.sh. This file is sensitive.\n\n'
+            printf 'set $render_channel "%s";\n' "$existing_channel"
+            printf 'set $render_account "%s";\n' "$existing_account"
+            printf 'set $render_token   "%s";\n' "$existing_token"
+        } > "$settings_file"
+        printf 'Migrated the existing renderer parameters into %s.\n' "$settings_file"
+    else
+        install -o root -g root -m 0600 \
+            "$repo_dir/nginx/settings.conf.example" "$settings_file"
+        printf 'Created %s from the example for this new server.\n' "$settings_file"
     fi
-
-    umask 077
-    {
-        printf '# Migrated by install-admin.sh. This file is sensitive.\n\n'
-        printf 'set $render_channel "%s";\n' "$existing_channel"
-        printf 'set $render_account "%s";\n' "$existing_account"
-        printf 'set $render_token   "%s";\n' "$existing_token"
-    } > "$settings_file"
-    printf 'Migrated the existing renderer parameters into %s.\n' "$settings_file"
 fi
 
 chown root:root "$settings_file"
@@ -157,6 +166,9 @@ restore_nginx_config() {
         rm -f "$site_target"
     fi
 }
+
+# Start the loopback relay before Nginx begins sending /ws traffic to it.
+bash "$repo_dir/scripts/install-ws-fanout.sh"
 
 install -o root -g root -m 0644 "$staged_upstream" "$upstream_target"
 install -o root -g root -m 0644 "$staged_site" "$site_target"
@@ -241,3 +253,4 @@ else
 fi
 printf '\nUse the web console to change the password. The stored password is hashed and cannot be displayed.\n'
 printf 'The panel accepts configured private networks only. Do not forward TCP 23000 to the Internet.\n'
+printf 'WebSocket fanout is enabled; matching LAN browsers share one overseas connection.\n'

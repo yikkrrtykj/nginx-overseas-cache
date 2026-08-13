@@ -199,7 +199,31 @@ server {
         proxy_cookie_flags ~ nosecure samesite=lax;
     }
 
-    # Main documents, APIs and WebSocket. Live traffic is never cached.
+    # All LAN browsers connect here, while the local fanout relay maintains
+    # only one overseas WebSocket for each origin/token/channel/mode group.
+    # Query parameters, including the token, are preserved by proxy_pass.
+    location = /ws {
+        proxy_pass http://127.0.0.1:3001;
+
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        # These headers are always overwritten by Nginx. The loopback-only
+        # relay validates them before opening an upstream connection, so a
+        # browser cannot select an arbitrary destination.
+        proxy_set_header X-Fanout-Upstream-Base "wss://$overseas_origin_host/ws";
+        proxy_set_header X-Fanout-Upstream-Origin "https://$overseas_origin_host";
+
+        proxy_cache off;
+        proxy_buffering off;
+
+        proxy_connect_timeout 10s;
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+    }
+
+    # Main documents and APIs. Live traffic is never cached.
     location / {
         proxy_pass https://webcoder_origin;
 

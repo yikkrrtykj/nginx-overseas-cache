@@ -4,12 +4,13 @@
 
 ```text
 内网浏览器 -> http://SERVER_IP:23333 -> Ubuntu Nginx -> 海外网页/CDN
+                                           └-> 本地 ws-fanout -> 1 条共享海外 WebSocket
 ```
 
 项目针对以下场景设计：
 
 - 内网客户端不安装 VPN 或系统代理；
-- 页面、API 和 WebSocket 保持实时，不缓存；
+- 页面和 API 保持实时、不缓存，WebSocket 实时消息由本地 fanout 共享；
 - 图片、字体和带版本号的 JavaScript 由 Nginx 缓存；
 - 浏览器始终停留在内网 IP，不会跳回海外域名；
 - token 单独保存在服务器上，不进入 Git 仓库。
@@ -25,6 +26,11 @@ nginx/
 ├── settings.conf.example
 └── sites-available/
     └── overseas-cache
+ws-fanout/
+├── requirements.txt
+└── ws_fanout.py
+systemd/
+└── ws-fanout.service
 ```
 
 ## 安装
@@ -36,13 +42,26 @@ sudo apt update
 sudo apt install -y nginx
 ```
 
-复制配置：
+推荐直接安装完整管理面板和 WebSocket fanout：
+
+```bash
+git clone https://github.com/yikkrrtykj/nginx-overseas-cache.git
+cd nginx-overseas-cache
+sudo bash scripts/install-admin.sh
+```
+
+该命令会自动部署 Nginx 配置、管理页面、Python 虚拟环境和
+`ws-fanout.service`。现有服务器再次运行也会保留当前域名、API 参数及管理密码。
+如果是全新服务器，安装后进入管理页面填写真实域名、channel、account 和 token。
+
+如果不使用完整安装程序，也可以手动复制配置：
 
 ```bash
 sudo cp nginx/conf.d/proxy-cache.conf /etc/nginx/conf.d/proxy-cache.conf
 sudo cp nginx/sites-available/overseas-cache /etc/nginx/sites-available/overseas-cache
 sudo mkdir -p /etc/nginx/overseas-cache
 sudo cp nginx/settings.conf.example /etc/nginx/overseas-cache/settings.conf
+sudo bash scripts/install-ws-fanout.sh
 ```
 
 编辑服务器本地设置：
@@ -81,6 +100,9 @@ http://SERVER_IP:23333/
 sudo nginx -t
 sudo systemctl reload nginx
 ```
+
+fanout 不把 token 写死在服务文件中。浏览器刷新后，新 token 会自动创建新的共享连接组，
+无需修改或重启 `ws-fanout.service`。
 
 ## 更换上游域名
 
@@ -178,8 +200,9 @@ sudo bash scripts/change-upstreams.sh api.example.com cdn.example.com
 1. 从现有 Nginx 配置识别旧域名；
 2. 备份两个配置文件；
 3. 更新统一的主站/CDN 变量和上游地址，Host、TLS SNI、跳转、Cookie、HTML/JS 地址及缓存键会自动引用新值；
-4. 执行 `nginx -t`；
-5. 验证成功后重新加载，失败则恢复备份。
+4. WebSocket fanout 会由 Nginx 自动使用新的主站域名；
+5. 执行 `nginx -t`；
+6. 验证成功后重新加载，失败则恢复备份。
 
 域名会参与静态缓存键，因此换域名后不会把旧站缓存误返回给新站。旧缓存会在 `inactive=7d` 到期后由 Nginx 自动清理。
 
@@ -195,9 +218,20 @@ sudo bash scripts/change-upstreams.sh api.example.com cdn.example.com
 
 - `/templates/`：缓存图片、字体和模板资源；
 - `/templates-auth/.../static/js/*.js`：缓存带哈希版本的 JavaScript；
-- `/render`、其他页面、API、WebSocket：不缓存；
+- `/render`、其他页面和 API：不缓存；
+- `/ws`：不缓存，经本机 `127.0.0.1:3001` fanout 转发；相同主站、token、channel 和 mode 的内网浏览器只建立一条海外 WebSocket；
 - `101 Switching Protocols` 长期处于挂起状态是正常的实时连接；
 - `X-Cache-Status: HIT` 表示静态资源已由 Nginx 缓存返回。
+
+查看 WebSocket 共享状态：
+
+```bash
+sudo systemctl status ws-fanout --no-pager
+sudo journalctl -u ws-fanout -f
+```
+
+日志中的 `clients=N` 是同一共享组当前连接的内网浏览器数量；同组日志只应出现一次
+`upstream connected`。`token=` 后面是不可逆的短哈希，不是真实 token。
 
 专用访问日志位于：
 

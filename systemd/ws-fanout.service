@@ -1,0 +1,38 @@
+[Unit]
+Description=Local WebSocket Fanout Relay
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/ws-fanout
+
+Environment=PYTHONUNBUFFERED=1
+Environment=LISTEN_HOST=127.0.0.1
+Environment=LISTEN_PORT=3001
+Environment=LOG_LEVEL=INFO
+
+ExecStart=/opt/ws-fanout/venv/bin/python /opt/ws-fanout/ws_fanout.py
+
+Restart=always
+RestartSec=2
+TimeoutStopSec=15
+
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
