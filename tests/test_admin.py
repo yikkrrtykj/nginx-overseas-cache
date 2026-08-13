@@ -257,6 +257,17 @@ class AdminConfigTests(unittest.TestCase):
         self.assertNotIn("$request_uri", log_format)
         self.assertIn("$overseas_log_route", log_format)
 
+    def test_nginx_routes_websocket_through_local_fanout(self):
+        config = (
+            MODULE_PATH.parents[1] / "nginx" / "sites-available" / "overseas-cache"
+        ).read_text(encoding="utf-8")
+        location = config.split("location = /ws {", 1)[1].split("\n    }", 1)[0]
+        self.assertIn("proxy_pass http://127.0.0.1:3001;", location)
+        self.assertIn('X-Fanout-Upstream-Base "wss://$overseas_origin_host/ws";', location)
+        self.assertIn('X-Fanout-Upstream-Origin "https://$overseas_origin_host";', location)
+        self.assertIn("proxy_cache off;", location)
+        self.assertIn("proxy_buffering off;", location)
+
     def test_settings_round_trip_and_no_shell_syntax(self):
         content = admin.render_settings("channel_1", "account-1", "secure_token-123")
         self.assertEqual(
