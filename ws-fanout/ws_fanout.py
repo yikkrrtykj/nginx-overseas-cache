@@ -326,12 +326,17 @@ async def remove_client(hub: Hub, client: ServerConnection) -> None:
     if hub.clients:
         return
 
-    if hub.upstream_task and not hub.upstream_task.done():
-        hub.upstream_task.cancel()
-
+    task_to_cancel: Optional[asyncio.Task] = None
     async with hubs_lock:
         if hubs.get(hub.key) is hub and not hub.clients:
             hubs.pop(hub.key, None)
+            task_to_cancel = hub.upstream_task
+
+    # Remove the empty hub while holding the lock before cancellation. A new
+    # browser will therefore create a fresh hub instead of racing onto a task
+    # that is in the process of being cancelled.
+    if task_to_cancel and not task_to_cancel.done():
+        task_to_cancel.cancel()
 
 
 async def client_handler(client: ServerConnection) -> None:
