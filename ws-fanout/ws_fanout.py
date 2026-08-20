@@ -14,6 +14,7 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qs, urlencode, urlsplit
 
@@ -27,6 +28,8 @@ LISTEN_PORT = int(os.getenv("LISTEN_PORT", "3001"))
 DEFAULT_UPSTREAM_BASE = os.getenv("UPSTREAM_BASE", "")
 DEFAULT_UPSTREAM_ORIGIN = os.getenv("UPSTREAM_ORIGIN", "")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+STATUS_FILE = Path(os.getenv("STATUS_FILE", "/run/ws-fanout/status.json"))
+STATUS_INTERVAL = max(1.0, float(os.getenv("STATUS_INTERVAL", "2")))
 UPSTREAM_BASE_HEADER = "X-Fanout-Upstream-Base"
 UPSTREAM_ORIGIN_HEADER = "X-Fanout-Upstream-Origin"
 HOST_PATTERN = re.compile(
@@ -39,6 +42,19 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
 )
 log = logging.getLogger("ws-fanout")
+started_at = time.monotonic()
+
+
+@dataclass(frozen=True)
+class ClientJoin:
+    key: str
+    upstream_uri: str
+    upstream_origin: str
+    trx_id: str
+    upstream_host: str
+    token_id: str
+    channel: str
+    renderer_mode: str
 
 
 @dataclass
@@ -47,6 +63,10 @@ class Hub:
     upstream_uri: str
     upstream_origin: str
     canonical_join: str | bytes
+    upstream_host: str
+    token_id: str
+    channel: str
+    renderer_mode: str
 
     clients: set[ServerConnection] = field(default_factory=set)
     join_trx: dict[ServerConnection, str] = field(default_factory=dict)
@@ -143,7 +163,7 @@ def client_upstream(client: ServerConnection) -> tuple[str, str, str]:
 def parse_client_join(
     client: ServerConnection,
     first_message: str | bytes,
-) -> tuple[str, str, str, str]:
+) -> ClientJoin:
     payload = parse_json(first_message)
     if not payload or payload.get("action") != "join":
         raise ValueError("first WebSocket message must be action=join")
@@ -175,7 +195,75 @@ def parse_client_join(
     )
     upstream_uri = f"{upstream_base}?{urlencode({'token': token})}"
 
-    return key, upstream_uri, upstream_origin, trx_id
+    return ClientJoin(
+        key=key,
+        upstream_uri=upstream_uri,
+        upstream_origin=upstream_origin,
+        trx_id=trx_id,
+        upstream_host=upstream_host,
+        token_id=token_id,
+        channel=channel,
+        renderer_mode=renderer_mode,
+    )
+
+
+def status_snapshot() -> dict[str, object]:
+    groups = []
+    for hub in sorted(hubs.values(), key=lambda item: item.key):
+        groups.append(
+            {
+                "origin": hub.upstream_host,
+                "tokenId": hub.token_id,
+                "channel": hub.channel,
+                "mode": hub.renderer_mode,
+                "localClients": len(hub.clients),
+                "acknowledgedClients": len(hub.acknowledged),
+                "upstreamConnected": hub.upstream is not None,
+            }
+        )
+
+    local_clients = sum(int(group["localClients"]) for group in groups)
+    acknowledged_clients = sum(
+        int(group["acknowledgedClients"]) for group in groups
+    )
+    upstream_connections = sum(
+        1 for group in groups if group["upstreamConnected"]
+    )
+    return {
+        "version": 1,
+        "generatedAt": utc_timestamp(),
+        "uptimeSeconds": max(0, int(time.monotonic() - started_at)),
+        "localClients": local_clients,
+        "acknowledgedClients": acknowledged_clients,
+        "activeHubs": len(groups),
+        "upstreamConnections": upstream_connections,
+        "savedUpstreamConnections": max(0, local_clients - upstream_connections),
+        "groups": groups,
+    }
+
+
+def write_status_file() -> None:
+    temporary = STATUS_FILE.with_name(f".{STATUS_FILE.name}.{os.getpid()}.tmp")
+    try:
+        STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(
+            json.dumps(status_snapshot(), ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, STATUS_FILE)
+    except OSError as exc:
+        log.warning("could not publish status file: %s", exc)
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+async def status_loop() -> None:
+    while True:
+        write_status_file()
+        await asyncio.sleep(STATUS_INTERVAL)
 
 
 async def send_join_response(hub: Hub, client: ServerConnection) -> None:
@@ -344,24 +432,26 @@ async def client_handler(client: ServerConnection) -> None:
 
     try:
         first_message = await asyncio.wait_for(client.recv(), timeout=15)
-        key, upstream_uri, upstream_origin, trx_id = parse_client_join(
-            client, first_message
-        )
+        join = parse_client_join(client, first_message)
 
         async with hubs_lock:
-            hub = hubs.get(key)
+            hub = hubs.get(join.key)
 
             if hub is None:
                 hub = Hub(
-                    key=key,
-                    upstream_uri=upstream_uri,
-                    upstream_origin=upstream_origin,
+                    key=join.key,
+                    upstream_uri=join.upstream_uri,
+                    upstream_origin=join.upstream_origin,
                     canonical_join=first_message,
+                    upstream_host=join.upstream_host,
+                    token_id=join.token_id,
+                    channel=join.channel,
+                    renderer_mode=join.renderer_mode,
                 )
-                hubs[key] = hub
+                hubs[join.key] = hub
 
             hub.clients.add(client)
-            hub.join_trx[client] = trx_id
+            hub.join_trx[client] = join.trx_id
 
             if hub.leader is None:
                 hub.leader = client
@@ -415,20 +505,27 @@ async def client_handler(client: ServerConnection) -> None:
 
 async def main() -> None:
     log.info("listening on ws://%s:%d", LISTEN_HOST, LISTEN_PORT)
-
-    async with serve(
-        client_handler,
-        LISTEN_HOST,
-        LISTEN_PORT,
-        compression="deflate",
-        ping_interval=20,
-        ping_timeout=20,
-        close_timeout=5,
-        max_size=None,
-        max_queue=64,
-        server_header=None,
-    ):
-        await asyncio.Future()
+    status_task = asyncio.create_task(status_loop())
+    try:
+        async with serve(
+            client_handler,
+            LISTEN_HOST,
+            LISTEN_PORT,
+            compression="deflate",
+            ping_interval=20,
+            ping_timeout=20,
+            close_timeout=5,
+            max_size=None,
+            max_queue=64,
+            server_header=None,
+        ):
+            await asyncio.Future()
+    finally:
+        status_task.cancel()
+        try:
+            await status_task
+        except asyncio.CancelledError:
+            pass
 
 
 if __name__ == "__main__":

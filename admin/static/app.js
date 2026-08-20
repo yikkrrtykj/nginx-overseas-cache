@@ -30,11 +30,20 @@ const discoveredCount = document.querySelector("#discoveredCount");
 const discoveryWarnings = document.querySelector("#discoveryWarnings");
 const candidateList = document.querySelector("#candidateList");
 const applyDiscoveryButton = document.querySelector("#applyDiscoveryButton");
+const telemetryBadge = document.querySelector("#telemetryBadge");
+const upstreamConnectionCount = document.querySelector("#upstreamConnectionCount");
+const localConnectionCount = document.querySelector("#localConnectionCount");
+const acknowledgedConnectionCount = document.querySelector("#acknowledgedConnectionCount");
+const activeHubCount = document.querySelector("#activeHubCount");
+const savedConnectionCount = document.querySelector("#savedConnectionCount");
+const connectionRows = document.querySelector("#connectionRows");
+const telemetryUpdatedAt = document.querySelector("#telemetryUpdatedAt");
 
 const fields = ["originHost", "cdnHost", "channelId", "accountId"];
 let csrfToken = "";
 let latestDiscovery = null;
 let selectedDiscoveryHost = "";
+let telemetryTimer = null;
 
 async function parseResponse(response) {
   const data = await response.json();
@@ -50,6 +59,84 @@ function setStatus(kind, title, message) {
   statusIcon.textContent = kind === "success" ? "✓" : kind === "error" ? "!" : "i";
   statusTitle.textContent = title;
   statusMessage.textContent = message;
+}
+
+function connectionCell(text, className = "") {
+  const cell = document.createElement("td");
+  cell.textContent = text;
+  if (className) cell.className = className;
+  return cell;
+}
+
+function connectionEmpty(message) {
+  const row = document.createElement("tr");
+  const cell = connectionCell(message, "connection-empty");
+  cell.colSpan = 5;
+  row.append(cell);
+  return row;
+}
+
+function renderConnectionStatus(status) {
+  telemetryBadge.className = `telemetry-badge ${status.available ? "online" : "offline"}`;
+  telemetryBadge.querySelector("strong").textContent = status.available ? "实时更新" : "状态不可用";
+
+  if (!status.available) {
+    upstreamConnectionCount.textContent = "—";
+    localConnectionCount.textContent = "—";
+    acknowledgedConnectionCount.textContent = status.message || "fanout 暂未上报";
+    activeHubCount.textContent = "—";
+    savedConnectionCount.textContent = "—";
+    connectionRows.replaceChildren(connectionEmpty(status.message || "fanout 暂未上报状态"));
+    telemetryUpdatedAt.textContent = "等待状态恢复";
+    return;
+  }
+
+  upstreamConnectionCount.textContent = status.upstreamConnections;
+  localConnectionCount.textContent = status.localClients;
+  acknowledgedConnectionCount.textContent = `已就绪 ${status.acknowledgedClients}`;
+  activeHubCount.textContent = status.activeHubs;
+  savedConnectionCount.textContent = status.savedUpstreamConnections;
+
+  const rows = [];
+  for (const group of status.groups || []) {
+    const row = document.createElement("tr");
+    const identity = document.createElement("td");
+    const origin = document.createElement("strong");
+    const channel = document.createElement("small");
+    origin.textContent = group.origin || "未知上游";
+    channel.textContent = group.channel || "未提供频道";
+    identity.append(origin, channel);
+
+    const upstreamState = group.upstreamConnected ? "已连接" : "正在重连";
+    row.append(
+      identity,
+      connectionCell(group.mode || "—"),
+      connectionCell(group.tokenId || "—", "token-id"),
+      connectionCell(`${group.localClients}（就绪 ${group.acknowledgedClients}）`),
+      connectionCell(upstreamState, group.upstreamConnected ? "state-online" : "state-waiting")
+    );
+    rows.push(row);
+  }
+  connectionRows.replaceChildren(...(rows.length ? rows : [connectionEmpty("当前没有本地渲染连接")]));
+
+  const updated = new Date(status.generatedAt);
+  telemetryUpdatedAt.textContent = Number.isNaN(updated.getTime())
+    ? "刚刚更新"
+    : `更新于 ${updated.toLocaleTimeString("zh-CN", { hour12: false })}`;
+}
+
+async function readConnectionStatus() {
+  if (telemetryTimer) window.clearTimeout(telemetryTimer);
+  try {
+    const response = await fetch("/api/status", { cache: "no-store", credentials: "same-origin" });
+    const data = await parseResponse(response);
+    if (!response.ok || !data.ok) throw new Error(data.message || "读取线路状态失败");
+    renderConnectionStatus(data.status);
+  } catch (error) {
+    renderConnectionStatus({ available: false, message: error.message });
+  } finally {
+    telemetryTimer = window.setTimeout(readConnectionStatus, 3000);
+  }
 }
 
 function currentPayload() {
@@ -311,3 +398,4 @@ logoutButton.addEventListener("click", async () => {
 });
 
 readConfig();
+readConnectionStatus();

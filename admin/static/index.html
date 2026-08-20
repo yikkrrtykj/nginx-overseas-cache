@@ -21,10 +21,58 @@
         </div>
       </header>
 
+      <section class="workspace telemetry-workspace" aria-labelledby="telemetry-title">
+        <div class="section-heading">
+          <div>
+            <p class="section-number">01 / LIVE CONNECTIONS</p>
+            <h2 id="telemetry-title">连接线路</h2>
+          </div>
+          <div class="telemetry-badge" id="telemetryBadge"><span></span><strong>正在读取</strong></div>
+        </div>
+
+        <div class="metric-grid" aria-live="polite">
+          <article class="metric-card">
+            <span>海外代理线路</span>
+            <strong id="upstreamConnectionCount">—</strong>
+            <small>实际建立的海外 WebSocket</small>
+          </article>
+          <article class="metric-card">
+            <span>本地连接</span>
+            <strong id="localConnectionCount">—</strong>
+            <small id="acknowledgedConnectionCount">已就绪 —</small>
+          </article>
+          <article class="metric-card">
+            <span>共享组</span>
+            <strong id="activeHubCount">—</strong>
+            <small>相同域名、token、频道和模式</small>
+          </article>
+          <article class="metric-card metric-card-accent">
+            <span>节省海外连接</span>
+            <strong id="savedConnectionCount">—</strong>
+            <small>由服务器合并的重复线路</small>
+          </article>
+        </div>
+
+        <div class="connection-table-wrap">
+          <table class="connection-table">
+            <thead>
+              <tr><th>上游与频道</th><th>模式</th><th>token 标识</th><th>本地连接</th><th>海外状态</th></tr>
+            </thead>
+            <tbody id="connectionRows">
+              <tr><td colspan="5" class="connection-empty">正在读取 fanout 状态…</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="telemetry-footer">
+          <span>只显示不可逆 token 短标识，不会把真实 token 发送到浏览器。</span>
+          <time id="telemetryUpdatedAt">尚未更新</time>
+        </div>
+      </section>
+
       <section class="workspace" aria-labelledby="config-title">
         <div class="section-heading">
           <div>
-            <p class="section-number">01 / CONFIGURATION</p>
+            <p class="section-number">02 / CONFIGURATION</p>
             <h2 id="config-title">代理配置</h2>
           </div>
           <div class="heading-actions">
@@ -78,7 +126,7 @@
           <div class="preview-card">
             <p>内网访问入口</p>
             <code>http://服务器IP:23333/</code>
-            <span>保存后，64 台内网电脑继续使用同一个地址。</span>
+            <span>保存后，所有内网电脑继续使用同一个地址。</span>
           </div>
 
           <div class="action-row">
@@ -93,7 +141,7 @@
       <section class="workspace discovery-workspace" aria-labelledby="discovery-title">
         <div class="section-heading">
           <div>
-            <p class="section-number">02 / SMART DISCOVERY</p>
+            <p class="section-number">03 / SMART DISCOVERY</p>
             <h2 id="discovery-title">识别新网页</h2>
           </div>
           <span class="discovery-badge">由 Ubuntu 服务器检测</span>

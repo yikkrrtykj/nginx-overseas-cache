@@ -38,6 +38,7 @@ SETTINGS_CONFIG = Path("/etc/nginx/overseas-cache/settings.conf")
 PASSWORD_CONFIG = Path("/etc/nginx/overseas-cache/admin-password.json")
 BACKUP_ROOT = Path("/etc/nginx/overseas-cache/backups")
 LOCK_FILE = Path("/run/overseas-cache-admin.lock")
+FANOUT_STATUS = Path("/run/ws-fanout/status.json")
 STATIC_ROOT = Path(__file__).resolve().parent / "static"
 
 HOST_PATTERN = re.compile(
@@ -696,6 +697,98 @@ def load_config() -> CurrentConfig:
     )
 
 
+def unavailable_fanout_status(message: str) -> dict[str, object]:
+    return {
+        "available": False,
+        "message": message,
+        "generatedAt": "",
+        "uptimeSeconds": 0,
+        "localClients": 0,
+        "acknowledgedClients": 0,
+        "activeHubs": 0,
+        "upstreamConnections": 0,
+        "savedUpstreamConnections": 0,
+        "groups": [],
+    }
+
+
+def read_fanout_status(
+    path: Path | None = None,
+    *,
+    now: float | None = None,
+    maximum_age: float = 10,
+) -> dict[str, object]:
+    selected_path = FANOUT_STATUS if path is None else path
+    current_time = time.time() if now is None else now
+    descriptor: int | None = None
+    try:
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        descriptor = os.open(selected_path, flags)
+        file_stat = os.fstat(descriptor)
+        if file_stat.st_size > 256 * 1024:
+            raise ValueError("status file is too large")
+        with os.fdopen(descriptor, encoding="utf-8") as stream:
+            descriptor = None
+            payload = json.load(stream)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        return unavailable_fanout_status("fanout 暂未上报状态")
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+    if not isinstance(payload, dict):
+        return unavailable_fanout_status("fanout 状态格式无效")
+
+    def safe_count(value: object) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return 0
+        return min(value, 1_000_000)
+
+    def safe_text(value: object, maximum: int = 253) -> str:
+        return value[:maximum] if isinstance(value, str) else ""
+
+    groups: list[dict[str, object]] = []
+    raw_groups = payload.get("groups", [])
+    if isinstance(raw_groups, list):
+        for item in raw_groups[:128]:
+            if not isinstance(item, dict):
+                continue
+            groups.append(
+                {
+                    "origin": safe_text(item.get("origin")),
+                    "tokenId": safe_text(item.get("tokenId"), 24),
+                    "channel": safe_text(item.get("channel"), 128),
+                    "mode": safe_text(item.get("mode"), 64),
+                    "localClients": safe_count(item.get("localClients")),
+                    "acknowledgedClients": safe_count(
+                        item.get("acknowledgedClients")
+                    ),
+                    "upstreamConnected": item.get("upstreamConnected") is True,
+                }
+            )
+
+    age = max(0.0, current_time - file_stat.st_mtime)
+    available = age <= maximum_age
+    return {
+        "available": available,
+        "message": "实时状态正常" if available else "fanout 状态已超过 10 秒未更新",
+        "generatedAt": safe_text(payload.get("generatedAt"), 64),
+        "uptimeSeconds": safe_count(payload.get("uptimeSeconds")),
+        "localClients": safe_count(payload.get("localClients")),
+        "acknowledgedClients": safe_count(payload.get("acknowledgedClients")),
+        "activeHubs": safe_count(payload.get("activeHubs")),
+        "upstreamConnections": safe_count(payload.get("upstreamConnections")),
+        "savedUpstreamConnections": safe_count(
+            payload.get("savedUpstreamConnections")
+        ),
+        "groups": groups,
+    }
+
+
 def validate_hostname(value: object, label: str) -> str:
     if not isinstance(value, str):
         raise AdminError(f"{label}格式不正确")
@@ -1180,6 +1273,12 @@ class AdminHandler(BaseHTTPRequestHandler):
                     b"",
                     (("Location", "/login"),),
                 )
+            return
+        if path == "/api/status":
+            self.send_json(
+                HTTPStatus.OK,
+                {"ok": True, "status": read_fanout_status()},
+            )
             return
         if path == "/api/config":
             try:

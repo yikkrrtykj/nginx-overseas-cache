@@ -50,16 +50,47 @@ class UpstreamValidationTests(unittest.TestCase):
                 },
             )
         )
-        key, uri, origin, trx_id = fanout.parse_client_join(
+        join = fanout.parse_client_join(
             client,
             '{"action":"join","trxId":"trx-1","data":'
             '{"channelId":"channel-1","rendererMode":"onair"}}',
         )
-        self.assertNotIn(token, key)
-        self.assertIn("token=", key)
-        self.assertIn(token, uri)
-        self.assertEqual(origin, "https://origin.example")
-        self.assertEqual(trx_id, "trx-1")
+        self.assertNotIn(token, join.key)
+        self.assertIn("token=", join.key)
+        self.assertIn(token, join.upstream_uri)
+        self.assertEqual(join.upstream_origin, "https://origin.example")
+        self.assertEqual(join.trx_id, "trx-1")
+
+    def test_status_snapshot_counts_connections_without_real_token(self):
+        token = "private-token-123"
+        token_id = fanout.hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+        hub = fanout.Hub(
+            key=f"origin=origin.example,token={token_id},channel=channel-1,mode=onair",
+            upstream_uri=f"wss://origin.example/ws?token={token}",
+            upstream_origin="https://origin.example",
+            canonical_join='{"action":"join"}',
+            upstream_host="origin.example",
+            token_id=token_id,
+            channel="channel-1",
+            renderer_mode="onair",
+        )
+        clients = [object(), object(), object()]
+        hub.clients.update(clients)
+        hub.acknowledged.update(clients[:2])
+        hub.upstream = SimpleNamespace()
+        fanout.hubs[hub.key] = hub
+        try:
+            snapshot = fanout.status_snapshot()
+        finally:
+            fanout.hubs.clear()
+
+        serialized = fanout.json.dumps(snapshot)
+        self.assertNotIn(token, serialized)
+        self.assertEqual(snapshot["localClients"], 3)
+        self.assertEqual(snapshot["acknowledgedClients"], 2)
+        self.assertEqual(snapshot["activeHubs"], 1)
+        self.assertEqual(snapshot["upstreamConnections"], 1)
+        self.assertEqual(snapshot["savedUpstreamConnections"], 2)
 
 
 if __name__ == "__main__":

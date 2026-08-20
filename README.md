@@ -223,6 +223,15 @@ sudo bash scripts/change-upstreams.sh api.example.com cdn.example.com
 - `101 Switching Protocols` 长期处于挂起状态是正常的实时连接；
 - `X-Cache-Status: HIT` 表示静态资源已由 Nginx 缓存返回。
 
+管理面板首页的“连接线路”每 3 秒自动刷新，直接显示：
+
+- 当前实际建立的海外 WebSocket 线路数；
+- 连接到本机 fanout 的内网浏览器数量及已完成握手数量；
+- 按主站、token、channel 和 mode 划分的共享组；
+- 相比每台电脑直连所减少的海外连接数量。
+
+这些数据由 fanout 写入 `/run/ws-fanout/status.json`，管理页只读取本机内存目录，不会为监控额外连接公网。状态中只包含不可逆的 token 短哈希，不包含真实 token。fanout 停止或状态超过 10 秒未更新时，页面会明确显示“状态不可用”，不会把旧数字当作实时数字。
+
 查看 WebSocket 共享状态：
 
 ```bash

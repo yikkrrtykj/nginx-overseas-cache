@@ -57,6 +57,44 @@ class AdminConfigTests(unittest.TestCase):
         self.assertEqual(admin.parse_upstream_host(UPSTREAM_FIXTURE, "webcoder_origin"), "old-origin.example")
         self.assertEqual(admin.parse_upstream_host(UPSTREAM_FIXTURE, "webcoder_cdn"), "old-cdn.example")
 
+    def test_fanout_status_file_reports_fresh_and_stale_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "status.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "generatedAt": "2026-08-20T07:32:36.953Z",
+                        "uptimeSeconds": 123,
+                        "localClients": 15,
+                        "acknowledgedClients": 15,
+                        "activeHubs": 1,
+                        "upstreamConnections": 1,
+                        "savedUpstreamConnections": 14,
+                        "groups": [
+                            {
+                                "origin": "origin.example",
+                                "tokenId": "e75970beff73",
+                                "channel": "channel-1",
+                                "mode": "onair",
+                                "localClients": 15,
+                                "acknowledgedClients": 15,
+                                "upstreamConnected": True,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            modified = path.stat().st_mtime
+            fresh = admin.read_fanout_status(path, now=modified + 2)
+            stale = admin.read_fanout_status(path, now=modified + 20)
+
+        self.assertTrue(fresh["available"])
+        self.assertEqual(fresh["localClients"], 15)
+        self.assertEqual(fresh["upstreamConnections"], 1)
+        self.assertEqual(fresh["groups"][0]["tokenId"], "e75970beff73")
+        self.assertFalse(stale["available"])
+
     def test_update_upstream_text_changes_servers_and_maps(self):
         updated = admin.update_upstream_text(
             UPSTREAM_FIXTURE, "new-origin.example", "new-cdn.example"
@@ -458,13 +496,29 @@ class AuthenticationTests(unittest.TestCase):
     def test_http_login_session_and_logout_flow(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "admin-password.json"
+            status_path = Path(directory) / "status.json"
             path.write_text(admin.render_password_record("admin", "login-password-123"), encoding="utf-8")
+            status_path.write_text(
+                json.dumps(
+                    {
+                        "localClients": 15,
+                        "acknowledgedClients": 15,
+                        "activeHubs": 1,
+                        "upstreamConnections": 1,
+                        "savedUpstreamConnections": 14,
+                        "groups": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
             original_path = admin.PASSWORD_CONFIG
+            original_status_path = admin.FANOUT_STATUS
             original_sessions = admin.SESSIONS
             original_limiter = admin.LOGIN_LIMITER
             original_nonces = admin.NONCES
             original_discover = admin.discover_site
             admin.PASSWORD_CONFIG = path
+            admin.FANOUT_STATUS = status_path
             admin.SESSIONS = admin.SessionStore()
             admin.LOGIN_LIMITER = admin.LoginLimiter()
             admin.NONCES = admin.NonceStore()
@@ -503,6 +557,13 @@ class AuthenticationTests(unittest.TestCase):
                 response = connection.getresponse()
                 session_payload = json.loads(response.read())
                 self.assertTrue(session_payload["authenticated"])
+
+                connection.request("GET", "/api/status", headers={"Cookie": cookie})
+                response = connection.getresponse()
+                status_payload = json.loads(response.read())
+                self.assertEqual(response.status, 200)
+                self.assertEqual(status_payload["status"]["localClients"], 15)
+                self.assertEqual(status_payload["status"]["upstreamConnections"], 1)
 
                 csrf_token = admin.NONCES.issue()
                 connection.request(
@@ -551,6 +612,7 @@ class AuthenticationTests(unittest.TestCase):
                 server.server_close()
                 thread.join(timeout=5)
                 admin.PASSWORD_CONFIG = original_path
+                admin.FANOUT_STATUS = original_status_path
                 admin.SESSIONS = original_sessions
                 admin.LOGIN_LIMITER = original_limiter
                 admin.NONCES = original_nonces

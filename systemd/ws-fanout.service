@@ -13,6 +13,11 @@ Environment=PYTHONUNBUFFERED=1
 Environment=LISTEN_HOST=127.0.0.1
 Environment=LISTEN_PORT=3001
 Environment=LOG_LEVEL=INFO
+Environment=STATUS_FILE=/run/ws-fanout/status.json
+Environment=STATUS_INTERVAL=2
+
+RuntimeDirectory=ws-fanout
+RuntimeDirectoryMode=0755
 
 ExecStart=/opt/ws-fanout/venv/bin/python /opt/ws-fanout/ws_fanout.py
 
