@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import parse_qs, urljoin, urlsplit, urlunsplit
@@ -145,7 +146,7 @@ class ResourceHTMLParser(HTMLParser):
 def normalize_discovery_url(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise AdminError(f"请填写{label}")
-    text = value.strip()
+    text = unescape(value.strip())
     match = re.search(r"https://[^\s\"'<>]+", text, re.IGNORECASE)
     if not match:
         raise AdminError(f"{label}必须是完整的 https:// 地址")
@@ -391,6 +392,18 @@ def discover_site(source_value: object, evidence_value: object = "") -> dict[str
             raise AdminError(f"原始网页返回 HTTP {source_fetch.status}，无法继续识别")
         origin_host = urlsplit(source_fetch.url).hostname or ""
         parameters = parse_render_parameters(source_url)
+        destination_parameters = parse_render_parameters(source_fetch.url)
+        identity_changed = any(
+            key in parameters
+            and key in destination_parameters
+            and parameters[key] != destination_parameters[key]
+            for key in ("channelId", "accountId")
+        )
+        if identity_changed:
+            # A new channel/account must not inherit credentials from the old URL.
+            parameters = destination_parameters
+        else:
+            parameters.update(destination_parameters)
         candidates: dict[str, dict[str, object]] = {}
         queue: list[str] = []
         queued: set[str] = {source_fetch.url}
@@ -540,8 +553,14 @@ def discover_site(source_value: object, evidence_value: object = "") -> dict[str
         recommended = str(
             (evidence_candidates or verified_compatible or compatible_candidates or [{"host": ""}])[0]["host"]
         )
-        if not parameters.get("channelId") or not parameters.get("accountId") or not parameters.get("token"):
-            warnings.append("网页地址中没有识别出全部 channelId、accountId 和 token；未识别的字段会保持当前值")
+        missing_parameters = [
+            key for key in ("channelId", "accountId", "token") if not parameters.get(key)
+        ]
+        if missing_parameters:
+            warnings.append(
+                f"未识别出 {'、'.join(missing_parameters)}；请填写完整的新网页地址，"
+                "或在配置中补全这些字段后保存，避免沿用旧频道参数"
+            )
         if not cdn_candidates:
             warnings.append("自动扫描没有确认独立 CDN；可以粘贴 F12 中任意成功字体、图片或 JS 的请求地址再次识别")
         elif not compatible_candidates:

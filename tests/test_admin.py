@@ -184,6 +184,63 @@ class AdminConfigTests(unittest.TestCase):
             "/templates-auth/channel_1/<token>/board/index.html",
         )
 
+    def test_discovery_accepts_html_escaped_render_query(self):
+        source_url = admin.normalize_discovery_url(
+            "https://origin.example.com/render?rendererMode=onair&amp;channelId=new_channel"
+            "&amp;accountId=new_account&amp;token=new-token-123",
+            "原始网页地址",
+        )
+        self.assertEqual(
+            admin.parse_render_parameters(source_url),
+            {"channelId": "new_channel", "accountId": "new_account", "token": "new-token-123"},
+        )
+
+    def test_discovery_uses_parameters_from_redirect_destination(self):
+        from unittest.mock import patch
+
+        for source_url in (
+            "https://origin.example.com/short-link",
+            "https://origin.example.com/render?channelId=old_channel&accountId=old_account&token=old-token-123",
+        ):
+            with self.subTest(source_url=source_url):
+                destination = admin.DiscoveryFetch(
+                    "https://origin.example.com/render?channelId=new_channel&accountId=new_account&token=new-token-123",
+                    200, "text/html", b"",
+                )
+                with patch.object(admin, "fetch_public_url", return_value=destination):
+                    result = admin.discover_site(source_url)
+                self.assertEqual(result["channelId"], "new_channel")
+                self.assertEqual(result["accountId"], "new_account")
+                self.assertEqual(result["token"], "new-token-123")
+
+    def test_redirect_to_new_channel_does_not_reuse_old_token(self):
+        from unittest.mock import patch
+
+        destination = admin.DiscoveryFetch(
+            "https://origin.example.com/render?channelId=new_channel",
+            200, "text/html", b"",
+        )
+        with patch.object(admin, "fetch_public_url", return_value=destination):
+            result = admin.discover_site(
+                "https://origin.example.com/render?channelId=old_channel&accountId=old_account&token=old-token-123"
+            )
+        self.assertEqual(result["channelId"], "new_channel")
+        self.assertEqual(result["accountId"], "")
+        self.assertEqual(result["token"], "")
+        self.assertTrue(any("accountId、token" in warning for warning in result["warnings"]))
+
+    def test_redirect_without_parameters_preserves_explicit_source_parameters(self):
+        from unittest.mock import patch
+
+        destination = admin.DiscoveryFetch("https://origin.example.com/render", 200, "text/html", b"")
+        with patch.object(admin, "fetch_public_url", return_value=destination):
+            result = admin.discover_site(
+                "https://origin.example.com/render?channelId=new_channel&accountId=new_account&token=new-token-123"
+            )
+        self.assertEqual(result["channelId"], "new_channel")
+        self.assertEqual(result["accountId"], "new_account")
+        self.assertEqual(result["token"], "new-token-123")
+
     def test_discovery_ranks_verified_f12_resource_as_cdn(self):
         source = admin.DiscoveryFetch(
             "https://origin.example.com/render?channelId=channel_1&accountId=account_1&token=secure-token-123",

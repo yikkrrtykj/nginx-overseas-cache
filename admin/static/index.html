@@ -154,7 +154,7 @@
               <label class="field field-wide">
                 <span>原始网页完整地址</span>
                 <input id="sourceUrl" name="sourceUrl" type="url" inputmode="url" spellcheck="false" required placeholder="https://example.com/render?channelId=...&token=...&accountId=...">
-                <small>自动提取主站、channelId、accountId 和 token，并扫描页面引用的资源域名。</small>
+                <small>识别成功会自动填入上方配置，包括 channelId、accountId 和 token；确认后点击“保存并应用”。</small>
               </label>
               <label class="field field-wide">
                 <span>F12 资源请求地址 <em>选填</em></span>
@@ -176,11 +176,14 @@
             <div><span>识别主站</span><strong id="discoveredOrigin">—</strong></div>
             <div><span>推荐 CDN</span><strong id="discoveredCdn">—</strong></div>
             <div><span>检查资源</span><strong id="discoveredCount">0</strong></div>
+            <div><span>识别 channelId</span><strong id="discoveredChannel">—</strong></div>
+            <div><span>识别 accountId</span><strong id="discoveredAccount">—</strong></div>
+            <div><span>识别 token</span><strong id="discoveredToken">—</strong></div>
           </div>
           <div id="discoveryWarnings" class="discovery-warnings"></div>
           <div class="candidate-heading">
             <div><strong>资源域名候选</strong><small>绿色“已验证”代表服务器拿到了正确类型的资源。</small></div>
-            <button type="button" class="quiet-button" id="applyDiscoveryButton">填入上方配置</button>
+            <button type="button" class="quiet-button" id="applyDiscoveryButton">重新填入上方配置</button>
           </div>
           <div id="candidateList" class="candidate-list"></div>
         </div>

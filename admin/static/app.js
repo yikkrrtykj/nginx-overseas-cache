@@ -3,6 +3,7 @@ const reloadButton = document.querySelector("#reloadButton");
 const saveButton = document.querySelector("#saveButton");
 const toggleToken = document.querySelector("#toggleToken");
 const tokenInput = document.querySelector("#token");
+const tokenHint = document.querySelector("#tokenHint");
 const dialog = document.querySelector("#confirmDialog");
 const changeSummary = document.querySelector("#changeSummary");
 const statusPanel = document.querySelector(".status-panel");
@@ -27,6 +28,9 @@ const discoveryResults = document.querySelector("#discoveryResults");
 const discoveredOrigin = document.querySelector("#discoveredOrigin");
 const discoveredCdn = document.querySelector("#discoveredCdn");
 const discoveredCount = document.querySelector("#discoveredCount");
+const discoveredChannel = document.querySelector("#discoveredChannel");
+const discoveredAccount = document.querySelector("#discoveredAccount");
+const discoveredToken = document.querySelector("#discoveredToken");
 const discoveryWarnings = document.querySelector("#discoveryWarnings");
 const candidateList = document.querySelector("#candidateList");
 const applyDiscoveryButton = document.querySelector("#applyDiscoveryButton");
@@ -44,6 +48,8 @@ let csrfToken = "";
 let latestDiscovery = null;
 let selectedDiscoveryHost = "";
 let telemetryTimer = null;
+let loadedConfig = null;
+let appliedDiscoveryInput = null;
 
 async function parseResponse(response) {
   const data = await response.json();
@@ -146,8 +152,13 @@ function currentPayload() {
 }
 
 function fillForm(config) {
+  loadedConfig = { ...config };
+  appliedDiscoveryInput = null;
   fields.forEach((name) => { document.querySelector(`#${name}`).value = config[name] || ""; });
   tokenInput.value = "";
+  tokenInput.required = false;
+  tokenInput.placeholder = "留空表示保持当前 token 不变";
+  tokenHint.textContent = "手动修改时 token 留空可保持原值；识别新网页后必须填写该网页的 token。";
 }
 
 async function readConfig() {
@@ -178,11 +189,15 @@ function summaryRow(label, value) {
 }
 
 function confirmChanges(payload) {
+  const parameterSummary = (name) => {
+    const previous = loadedConfig?.[name];
+    return previous && previous !== payload[name] ? `${previous} → ${payload[name]}` : payload[name];
+  };
   changeSummary.replaceChildren(
     summaryRow("主站域名", payload.originHost),
     summaryRow("CDN 域名", payload.cdnHost),
-    summaryRow("channelId", payload.channelId),
-    summaryRow("accountId", payload.accountId),
+    summaryRow("channelId", parameterSummary("channelId")),
+    summaryRow("accountId", parameterSummary("accountId")),
     summaryRow("token", payload.token ? "替换为新值" : "保持当前值")
   );
   dialog.showModal();
@@ -218,6 +233,17 @@ async function saveConfig(payload) {
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (discoverButton.disabled) {
+    setStatus("", "请等待识别完成", "新网页参数正在识别，完成后再保存。");
+    return;
+  }
+  if (appliedDiscoveryInput && (
+    sourceUrl.value.trim() !== appliedDiscoveryInput.source ||
+    evidenceUrl.value.trim() !== appliedDiscoveryInput.evidence
+  )) {
+    setStatus("error", "请重新识别当前地址", "地址已修改，上次识别的频道参数不能用于保存当前网页。");
+    return;
+  }
   if (!form.reportValidity()) return;
   const payload = currentPayload();
   if (!(await confirmChanges(payload))) return;
@@ -245,6 +271,7 @@ function candidateCard(candidate, selected) {
     selectedDiscoveryHost = candidate.host;
     discoveredCdn.textContent = candidate.host;
     applyDiscoveryButton.disabled = !candidate.compatible;
+    document.querySelector("#cdnHost").value = candidate.compatible ? candidate.host : "";
     candidateList.querySelectorAll(".candidate-card").forEach((card) => card.classList.remove("selected"));
     label.classList.add("selected");
   });
@@ -278,6 +305,9 @@ function renderDiscovery(result) {
   discoveredOrigin.textContent = result.sourceHost || "未识别";
   discoveredCdn.textContent = selectedDiscoveryHost || "未识别";
   discoveredCount.textContent = `${result.inspectedCount} 项`;
+  discoveredChannel.textContent = result.channelId || "未识别，需填写";
+  discoveredAccount.textContent = result.accountId || "未识别，需填写";
+  discoveredToken.textContent = result.token ? "已识别（隐藏）" : "未识别，需填写";
   discoveryWarnings.replaceChildren();
   for (const warningText of result.warnings || []) {
     const warning = document.createElement("p");
@@ -294,7 +324,7 @@ function renderDiscovery(result) {
     empty.textContent = "没有找到可用资源域名，请补充 F12 中成功资源的请求地址后重新识别。";
     candidateList.append(empty);
   }
-  applyDiscoveryButton.disabled = !result.sourceHost || !selectedDiscoveryHost;
+  applyDiscoveryButton.disabled = !result.sourceHost;
   discoveryResults.hidden = false;
   discoveryResults.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
@@ -302,6 +332,10 @@ function renderDiscovery(result) {
 discoveryForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (!discoveryForm.reportValidity()) return;
+  const submittedSource = sourceUrl.value.trim();
+  const submittedEvidence = evidenceUrl.value.trim();
+  latestDiscovery = null;
+  selectedDiscoveryHost = "";
   discoverButton.disabled = true;
   discoveryResults.hidden = true;
   setStatus("", "正在识别网页资源", "Ubuntu 正在加载原始页面并检查静态资源域名，通常需要几秒。 ");
@@ -310,16 +344,17 @@ discoveryForm.addEventListener("submit", async (event) => {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
-      body: JSON.stringify({ sourceUrl: sourceUrl.value.trim(), evidenceUrl: evidenceUrl.value.trim() }),
+      body: JSON.stringify({ sourceUrl: submittedSource, evidenceUrl: submittedEvidence }),
     });
     const data = await parseResponse(response);
     if (data.csrfToken) csrfToken = data.csrfToken;
     if (!response.ok || !data.ok) throw new Error(data.message || "识别失败");
+    if (sourceUrl.value.trim() !== submittedSource || evidenceUrl.value.trim() !== submittedEvidence) {
+      setStatus("", "地址已经修改", "本次结果未填入，请重新识别当前地址。");
+      return;
+    }
     renderDiscovery(data.result);
-    const note = data.result.warnings?.length
-      ? "识别完成，但仍有需要确认的项目。查看下方提示后再填入配置。"
-      : "已找到并验证资源域名，可以填入上方配置。";
-    setStatus("success", "网页识别完成", note);
+    applyDiscovery(false);
   } catch (error) {
     setStatus("error", "无法识别网页", error.message);
   } finally {
@@ -327,19 +362,45 @@ discoveryForm.addEventListener("submit", async (event) => {
   }
 });
 
-applyDiscoveryButton.addEventListener("click", () => {
-  if (!latestDiscovery || !selectedDiscoveryHost) return;
+function applyDiscovery(scroll = true) {
+  if (!latestDiscovery) return;
+  appliedDiscoveryInput = { source: sourceUrl.value.trim(), evidence: evidenceUrl.value.trim() };
   document.querySelector("#originHost").value = latestDiscovery.sourceHost || "";
   document.querySelector("#cdnHost").value = selectedDiscoveryHost;
-  if (latestDiscovery.channelId) document.querySelector("#channelId").value = latestDiscovery.channelId;
-  if (latestDiscovery.accountId) document.querySelector("#accountId").value = latestDiscovery.accountId;
-  if (latestDiscovery.token) tokenInput.value = latestDiscovery.token;
-  form.scrollIntoView({ behavior: "smooth", block: "start" });
+  document.querySelector("#channelId").value = latestDiscovery.channelId || "";
+  document.querySelector("#accountId").value = latestDiscovery.accountId || "";
+  tokenInput.value = latestDiscovery.token || "";
+  tokenInput.required = true;
+  tokenInput.placeholder = "请填写新网页地址中的 token";
+  tokenHint.textContent = latestDiscovery.token
+    ? "已填入新网页的 token，将与新频道一起保存。"
+    : "未识别到新网页的 token，请补填后保存；不会自动沿用旧 token。";
+  if (scroll) form.scrollIntoView({ behavior: "smooth", block: "start" });
+  const missing = [
+    ...fields.filter((name) => !document.querySelector(`#${name}`).value),
+    ...(tokenInput.value ? [] : ["token"]),
+  ];
   setStatus(
-    "success",
-    "识别结果已填入",
-    "请核对主站、CDN 和参数；点击“保存并应用”后才会修改服务器配置。"
+    missing.length ? "" : "success",
+    missing.length ? "识别结果已填入，待补全" : "识别结果已自动填入",
+    missing.length
+      ? `请补全 ${missing.join("、")} 后保存；未识别的参数已清空。`
+      : `新频道：${latestDiscovery.channelId}。请核对识别提示，再点击“保存并应用”；服务器当前配置尚未改变。`
   );
+}
+
+applyDiscoveryButton.addEventListener("click", () => applyDiscovery());
+
+[sourceUrl, evidenceUrl].forEach((input) => {
+  input.addEventListener("input", () => {
+    latestDiscovery = null;
+    selectedDiscoveryHost = "";
+    discoveryResults.hidden = true;
+    applyDiscoveryButton.disabled = true;
+    if (appliedDiscoveryInput) {
+      setStatus("", "地址已经修改", "请重新识别，新结果会更新上方的频道参数。");
+    }
+  });
 });
 
 passwordButton.addEventListener("click", () => {
