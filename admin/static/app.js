@@ -284,16 +284,16 @@ function candidateCard(candidate, selected) {
   const verification = document.createElement("span");
   verification.className = candidate.valid ? "verification verified" : "verification";
   verification.textContent = candidate.valid
-    ? `${candidate.compatible ? "已验证" : "路径待适配"} · HTTP ${candidate.status}`
+    ? `${candidate.compatible ? "已验证" : "路径待适配"}（HTTP ${candidate.status}）`
     : candidate.verified
-      ? `响应异常 · HTTP ${candidate.status}`
+      ? `响应异常（HTTP ${candidate.status}）`
       : "扫描发现";
   heading.append(host, verification);
 
   const details = document.createElement("p");
   const typeText = candidate.types.length ? candidate.types.join(" / ") : "未知资源";
   const sampleText = candidate.samples.length ? candidate.samples[0] : "/";
-  details.textContent = `${typeText} · ${candidate.contentType || "待验证"} · ${sampleText}`;
+  details.textContent = `${typeText}（${candidate.contentType || "待验证"}）：${sampleText}`;
   content.append(heading, details);
   label.append(radio, content);
   return label;
@@ -326,7 +326,7 @@ function renderDiscovery(result) {
   }
   applyDiscoveryButton.disabled = !result.sourceHost;
   discoveryResults.hidden = false;
-  discoveryResults.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  discoveryResults.scrollIntoView({ block: "nearest" });
 }
 
 discoveryForm.addEventListener("submit", async (event) => {
@@ -375,7 +375,7 @@ function applyDiscovery(scroll = true) {
   tokenHint.textContent = latestDiscovery.token
     ? "已填入新网页的 token，将与新频道一起保存。"
     : "未识别到新网页的 token，请补填后保存；不会自动沿用旧 token。";
-  if (scroll) form.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (scroll) form.scrollIntoView({ block: "start" });
   const missing = [
     ...fields.filter((name) => !document.querySelector(`#${name}`).value),
     ...(tokenInput.value ? [] : ["token"]),
