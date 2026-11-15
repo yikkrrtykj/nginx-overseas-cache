@@ -20,7 +20,6 @@
     <main class="frame login-shell">
       <section class="login-card" aria-labelledby="login-title">
         <h1 id="login-title">管理员登录</h1>
-        <p class="login-copy">请输入服务器管理账号，不是渲染页面的 accountId。</p>
         <noscript><p class="noscript-note">启用 JavaScript 后才能登录。</p></noscript>
         <form id="loginForm" method="post" autocomplete="on">
           <label class="field">
@@ -38,17 +37,6 @@
           <button class="primary-button login-button" id="loginButton" type="submit">进入控制台</button>
         </form>
       </section>
-
-      <aside class="login-context" aria-labelledby="access-title">
-        <h2 id="access-title">内网管理入口</h2>
-        <p>登录后可修改上游域名、频道参数和访问令牌。</p>
-        <dl class="access-facts">
-          <div><dt>访问范围</dt><dd>可信内网</dd></div>
-          <div><dt>会话有效期</dt><dd><time datetime="PT8H">8 小时</time></dd></div>
-          <div><dt>连接方式</dt><dd>HTTP</dd></div>
-        </dl>
-        <p class="http-warning">当前为 HTTP 内网连接。请勿通过公共 Wi-Fi 或互联网访问本页面。</p>
-      </aside>
     </main>
     <script src="/login.js" defer></script>
   </body>

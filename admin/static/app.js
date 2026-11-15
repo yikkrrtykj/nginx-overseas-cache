@@ -60,11 +60,12 @@ async function parseResponse(response) {
   return data;
 }
 
-function setStatus(kind, title, message) {
+function setStatus(kind, title, message = "") {
   statusPanel.className = `status-panel ${kind || ""}`.trim();
   statusIcon.textContent = kind === "success" ? "✓" : kind === "error" ? "!" : "i";
   statusTitle.textContent = title;
   statusMessage.textContent = message;
+  statusPanel.hidden = false;
 }
 
 function connectionCell(text, className = "") {
@@ -157,20 +158,19 @@ function fillForm(config) {
   fields.forEach((name) => { document.querySelector(`#${name}`).value = config[name] || ""; });
   tokenInput.value = "";
   tokenInput.required = false;
-  tokenInput.placeholder = "留空表示保持当前 token 不变";
-  tokenHint.textContent = "手动修改时 token 留空可保持原值；识别新网页后必须填写该网页的 token。";
+  tokenHint.textContent = "留空保留当前 token。";
 }
 
-async function readConfig() {
+async function readConfig(announce = false) {
   reloadButton.disabled = true;
-  setStatus("", "正在读取服务器配置", "旧 token 不会返回浏览器。");
+  if (announce) setStatus("", "正在读取配置…");
   try {
     const response = await fetch("/api/config", { cache: "no-store", credentials: "same-origin" });
     const data = await parseResponse(response);
     if (data.csrfToken) csrfToken = data.csrfToken;
     if (!response.ok || !data.ok) throw new Error(data.message || "读取失败");
     fillForm(data.config);
-    setStatus("success", "配置已就绪", "修改后点击“保存并应用”。留空 token 将保持服务器上的原值。 ");
+    if (announce) setStatus("success", "已重新读取配置");
   } catch (error) {
     setStatus("error", "无法读取配置", error.message);
   } finally {
@@ -208,7 +208,7 @@ function confirmChanges(payload) {
 
 async function saveConfig(payload) {
   saveButton.disabled = true;
-  setStatus("", "正在验证并应用", "服务器正在备份旧配置并运行 Nginx 检查，请不要关闭页面。");
+  setStatus("", "正在应用配置…");
   try {
     const response = await fetch("/api/config", {
       method: "POST",
@@ -220,12 +220,11 @@ async function saveConfig(payload) {
     if (data.csrfToken) csrfToken = data.csrfToken;
     if (!response.ok || !data.ok) throw new Error(data.message || "保存失败");
     fillForm(data.config);
-    const backup = data.backup ? `备份编号：${data.backup}` : "没有需要写入的变化。";
-    setStatus("success", "配置已生效", `${data.message}\n${backup}`);
+    setStatus("success", data.backup === null ? "配置没有变化" : "配置已生效");
   } catch (error) {
     const failureMessage = error.message;
     await readConfig();
-    setStatus("error", "没有应用新配置", `${failureMessage}\n服务器已重新读取当前有效配置。`);
+    setStatus("error", "没有应用新配置", failureMessage);
   } finally {
     saveButton.disabled = false;
   }
@@ -250,7 +249,7 @@ form.addEventListener("submit", async (event) => {
   await saveConfig(payload);
 });
 
-reloadButton.addEventListener("click", readConfig);
+reloadButton.addEventListener("click", () => readConfig(true));
 toggleToken.addEventListener("click", () => {
   const show = tokenInput.type === "password";
   tokenInput.type = show ? "text" : "password";
@@ -338,7 +337,7 @@ discoveryForm.addEventListener("submit", async (event) => {
   selectedDiscoveryHost = "";
   discoverButton.disabled = true;
   discoveryResults.hidden = true;
-  setStatus("", "正在识别网页资源", "Ubuntu 正在加载原始页面并检查静态资源域名，通常需要几秒。 ");
+  setStatus("", "正在识别网页…");
   try {
     const response = await fetch("/api/discover", {
       method: "POST",
@@ -371,10 +370,9 @@ function applyDiscovery(scroll = true) {
   document.querySelector("#accountId").value = latestDiscovery.accountId || "";
   tokenInput.value = latestDiscovery.token || "";
   tokenInput.required = true;
-  tokenInput.placeholder = "请填写新网页地址中的 token";
   tokenHint.textContent = latestDiscovery.token
-    ? "已填入新网页的 token，将与新频道一起保存。"
-    : "未识别到新网页的 token，请补填后保存；不会自动沿用旧 token。";
+    ? "已填入新 token。"
+    : "未识别到 token，请补填。";
   if (scroll) form.scrollIntoView({ block: "start" });
   const missing = [
     ...fields.filter((name) => !document.querySelector(`#${name}`).value),
@@ -382,10 +380,10 @@ function applyDiscovery(scroll = true) {
   ];
   setStatus(
     missing.length ? "" : "success",
-    missing.length ? "识别结果已填入，待补全" : "识别结果已自动填入",
+    missing.length ? "识别结果待补全" : "识别结果已填入",
     missing.length
-      ? `请补全 ${missing.join("、")} 后保存；未识别的参数已清空。`
-      : `新频道：${latestDiscovery.channelId}。请核对识别提示，再点击“保存并应用”；服务器当前配置尚未改变。`
+      ? `请补全 ${missing.join("、")} 后保存。`
+      : "核对后点击“保存并应用”。"
   );
 }
 

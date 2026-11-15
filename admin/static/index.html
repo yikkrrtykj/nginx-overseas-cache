@@ -28,16 +28,7 @@
     </header>
 
     <main id="main" class="frame shell">
-      <div class="page-heading">
-        <div>
-          <h1>代理控制台</h1>
-          <p>查看连接线路，管理上游域名与渲染频道。</p>
-        </div>
-        <div class="access-entry">
-          <span>内网访问入口</span>
-          <code>http://服务器IP:23333/</code>
-        </div>
-      </div>
+      <h1 class="page-heading">代理控制台</h1>
       <noscript><p class="noscript-note">启用 JavaScript 后才能读取状态和保存配置。</p></noscript>
 
       <section id="connections" class="workspace telemetry-workspace" aria-labelledby="telemetry-title">
@@ -53,7 +44,6 @@
           <article class="metric-card">
             <span>海外代理线路</span>
             <strong id="upstreamConnectionCount">暂无</strong>
-            <small>实际建立的海外 WebSocket</small>
           </article>
           <article class="metric-card">
             <span>本地连接</span>
@@ -63,12 +53,10 @@
           <article class="metric-card">
             <span>共享组</span>
             <strong id="activeHubCount">暂无</strong>
-            <small>相同域名、token、频道和模式</small>
           </article>
           <article class="metric-card">
             <span>节省海外连接</span>
             <strong id="savedConnectionCount">暂无</strong>
-            <small>由服务器合并的重复线路</small>
           </article>
         </div>
 
@@ -78,20 +66,19 @@
               <tr><th scope="col">上游与频道</th><th scope="col">模式</th><th scope="col">token 标识</th><th scope="col">本地连接</th><th scope="col">海外状态</th></tr>
             </thead>
             <tbody id="connectionRows">
-              <tr><td colspan="5" class="connection-empty">正在读取 fanout 状态…</td></tr>
+              <tr><td colspan="5" class="connection-empty">正在读取连接状态…</td></tr>
             </tbody>
           </table>
         </div>
-        <div class="telemetry-footer">
-          <span>连接明细只显示 token 短标识。</span>
-          <span class="table-scroll-hint">左右滑动查看全部列。</span>
-        </div>
+        <p class="table-scroll-hint">左右滑动查看全部列。</p>
       </section>
 
-      <section class="status-panel" aria-live="polite">
-        <span class="status-icon" id="statusIcon" aria-hidden="true">i</span>
-        <div><strong id="statusTitle">正在读取服务器配置</strong><p id="statusMessage">请稍候，当前 token 不会传到浏览器。</p></div>
-      </section>
+      <div role="status" aria-live="polite" aria-atomic="true">
+        <div class="status-panel" hidden>
+          <span class="status-icon" id="statusIcon" aria-hidden="true">i</span>
+          <div><strong id="statusTitle"></strong><p id="statusMessage"></p></div>
+        </div>
+      </div>
 
       <div class="workbench">
       <section id="configuration" class="workspace configuration-workspace" aria-labelledby="config-title">
@@ -107,12 +94,10 @@
               <label class="field">
                 <span>主站域名</span>
                 <input id="originHost" name="originHost" type="text" inputmode="url" spellcheck="false" required placeholder="api.example.com">
-                <small>页面、API 与 WebSocket 的来源</small>
               </label>
               <label class="field">
                 <span>静态 CDN 域名</span>
                 <input id="cdnHost" name="cdnHost" type="text" inputmode="url" spellcheck="false" required placeholder="cdn.example.com">
-                <small>字体、图片和模板资源的来源</small>
               </label>
             </div>
           </fieldset>
@@ -123,26 +108,23 @@
               <label class="field">
                 <span>channelId</span>
                 <input id="channelId" name="channelId" type="text" spellcheck="false" required>
-                <small>频道标识，例如 pgs26_p</small>
               </label>
               <label class="field">
                 <span>accountId</span>
                 <input id="accountId" name="accountId" type="text" spellcheck="false" required>
-                <small>频道所属账户标识</small>
               </label>
               <label class="field field-wide">
                 <span>新 token</span>
                 <div class="token-control">
-                  <input id="token" name="token" type="password" spellcheck="false" autocomplete="new-password" placeholder="留空表示保持当前 token 不变">
+                  <input id="token" name="token" type="password" spellcheck="false" autocomplete="new-password" aria-describedby="tokenHint">
                   <button class="quiet-button" id="toggleToken" type="button" aria-label="显示或隐藏 token">显示</button>
                 </div>
-                <small id="tokenHint">服务器上已有 token；为了安全，管理页不会读取并显示原值。</small>
+                <small id="tokenHint">留空保留当前 token。</small>
               </label>
             </div>
           </fieldset>
 
           <div class="action-row">
-            <p>保存前会备份并检查 Nginx。失败时恢复原配置。</p>
             <button class="primary-button" id="saveButton" type="submit">
               保存并应用
             </button>
@@ -162,17 +144,14 @@
               <label class="field field-wide">
                 <span>原始网页完整地址</span>
                 <input id="sourceUrl" name="sourceUrl" type="url" inputmode="url" spellcheck="false" required placeholder="https://example.com/render?…">
-                <small>识别成功会自动填入代理配置。确认频道、账户和 token 后再保存。</small>
               </label>
               <label class="field field-wide">
                 <span>F12 资源请求地址 <em>选填</em></span>
-                <input id="evidenceUrl" name="evidenceUrl" type="text" inputmode="url" spellcheck="false" placeholder="粘贴成功字体、图片、CSS 或 JS 的请求 URL">
-                <small>未识别出 CDN 时，粘贴浏览器网络面板里的成功资源地址。</small>
+                <input id="evidenceUrl" name="evidenceUrl" type="text" inputmode="url" spellcheck="false" placeholder="粘贴字体、图片、CSS 或 JS 的请求地址">
               </label>
             </div>
           </fieldset>
           <div class="discovery-action">
-            <p>Ubuntu 仅扫描 HTTPS 公网域名。</p>
             <button class="quiet-button" id="discoverButton" type="submit">
               开始识别
             </button>
@@ -190,7 +169,7 @@
           </div>
           <div id="discoveryWarnings" class="discovery-warnings"></div>
           <div class="candidate-heading">
-            <div><strong>资源域名候选</strong><small>“已验证”表示服务器已取得正确类型的资源。</small></div>
+            <strong>资源域名候选</strong>
             <button type="button" class="quiet-button" id="applyDiscoveryButton">重新填入配置</button>
           </div>
           <div id="candidateList" class="candidate-list"></div>
@@ -198,14 +177,13 @@
       </section>
 
       </div>
-      <footer class="page-footer">管理页面仅供可信内网使用。</footer>
     </main>
 
     <dialog id="confirmDialog" aria-labelledby="confirm-title">
       <form method="dialog" class="dialog-card">
         <h2 id="confirm-title">确认应用这些配置？</h2>
         <div id="changeSummary" class="change-summary"></div>
-        <p class="dialog-note">保存时连接可能短暂重载，但 WebSocket 会由浏览器自动重新连接。</p>
+        <p class="dialog-note">应用时客户端可能短暂重连。</p>
         <div class="dialog-actions">
           <button type="submit" value="cancel" class="quiet-button">返回修改</button>
           <button type="submit" value="confirm" class="primary-button">确认应用</button>
