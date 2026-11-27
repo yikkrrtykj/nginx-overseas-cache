@@ -17,7 +17,7 @@ Admin runs under a dedicated account, serves embedded assets, authenticates sess
 | Admin JSON endpoints | Legacy unversioned paths and V2 aliases; reconnection and traffic additions versioned as described in the API contract. |
 | Current config and token | Original settings format and paths, blank token retains current value, discovery requires current channel and token. |
 | Password | PBKDF2-SHA256 version 1 remains readable and writable by either runtime. Sessions are reissued after process changes. |
-| Original HTTPS scan and F12 hint | Same operations and CDN ranking. V2 revalidates every redirect and bounds requests, time and bytes. The DNS validator expects ASCII hostnames. |
+| Original HTTPS scan and F12 hint | Same operations and CDN ranking. V2 revalidates every redirect and bounds requests, time and bytes. Unicode hostnames are normalized to ASCII with IDNA before validation. |
 | Default management on all interfaces | Loopback by default. TLS management and explicit trusted LAN HTTP bindings are available in the V2 environment file. |
 | V1 Python admin and relay | Kept in source as comparison baselines. Previous deployment assets remain on the server during upgrade. |
 

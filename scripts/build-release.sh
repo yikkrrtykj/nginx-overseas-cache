@@ -29,6 +29,8 @@ for arch in amd64 arm64; do
     cp "$(go list -m -f '{{.Dir}}' github.com/gorilla/websocket)/LICENSE" "$root/licenses/gorilla-websocket.txt"
     cp "$(go list -m -f '{{.Dir}}' golang.org/x/net)/LICENSE" "$root/licenses/x-net.txt"
     cp "$(go list -m -f '{{.Dir}}' golang.org/x/net)/PATENTS" "$root/licenses/x-net-patents.txt"
+    cp "$(go list -m -f '{{.Dir}}' golang.org/x/text)/LICENSE" "$root/licenses/x-text.txt"
+    cp "$(go list -m -f '{{.Dir}}' golang.org/x/text)/PATENTS" "$root/licenses/x-text-patents.txt"
     cp "$(go env GOROOT)/LICENSE" "$root/licenses/go-runtime.txt"
     tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner -C "$stage" -cf - "$name" |
         gzip -n > "$out/$name.tar.gz"

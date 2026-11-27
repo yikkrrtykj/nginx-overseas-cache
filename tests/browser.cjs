@@ -103,6 +103,7 @@ async function run() {
     await trigger.focus();
     await page.keyboard.press('Enter');
     assert.equal(await page.locator('#inspector').isVisible(), true);
+    await page.screenshot({ path: path.join(artifact, 'v2-inspector.png') });
     await page.keyboard.press('Escape');
     assert.equal(await page.locator('#inspector').isVisible(), false);
 
@@ -121,6 +122,8 @@ async function run() {
     await page.locator('#confirm button[value=confirm]').click();
     await whenText(page, '#operation', 'Nginx 检查和重载完成');
     assert.match(await page.locator('#backup').inputValue(), /^admin-/);
+    await page.locator('#configuration').scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(artifact, 'v2-configuration.png') });
 
     await page.locator('#channel').fill('fail-config');
     await page.locator('#save').click();
@@ -137,6 +140,7 @@ async function run() {
       await page.reload({ waitUntil: 'domcontentloaded' });
       await page.waitForFunction(tone => document.querySelector('#status-badge')?.dataset.tone === tone, tone);
       assert.equal(await page.locator('#local-clients').textContent(), value);
+      await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
       await page.screenshot({ path: path.join(artifact, 'v2-' + mode + '.png') });
     }
 

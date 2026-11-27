@@ -1,4 +1,5 @@
 """Run the preserved V1 Admin with isolated credentials and status."""
+import hashlib
 import json
 import os
 import sys
@@ -44,7 +45,7 @@ def main():
                 "groups": [
                     {"origin": host, "channel": channel, "mode": mode, "localClients": total,
                      "acknowledgedClients": confirmed, "upstreamConnected": True,
-                     "tokenId": "abcdef012345"}
+                     "tokenId": hashlib.sha256(b"browser fixture token id").hexdigest()[:12]}
                     for host, channel, mode, total, confirmed in [
                         ("origin.example", "arena-stage", "onair", 18, 18),
                         ("origin.example", "observer-feed", "preview", 7, 7),

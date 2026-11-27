@@ -133,6 +133,8 @@ dialog .data-list > div { padding-inline: 0; }
   .metrics > div:nth-child(n+3) { border-top: 1px solid var(--border); }
   .split, .config-grid { grid-template-columns: minmax(0,1fr); }
   .config-grid > :last-child { border-left: 0; border-top: 1px solid var(--border); }
+  nav { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 4px; }
+  nav a { gap: 5px; padding-inline: 6px; font-size: 12px; }
   .top-actions { flex-direction: column; align-items: flex-end; gap: 4px; }
   .compact-metrics > div { padding-inline: 9px; }
   .rollback { flex-wrap: wrap; }

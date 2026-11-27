@@ -124,8 +124,10 @@ async function build(tmp, variant, dependencies) {
   const imports = utilities ? '@import "tailwindcss";\n' : '';
   const daisy = variant === 'daisyui' ? '@plugin "daisyui" { themes: dark --default; }\n' : '';
   await writeFile(path.join(folder, 'style.css'), imports + daisy + css);
-  if (utilities) await writeFile(path.join(folder, 'vite.config.js'),
-    "import tailwind from '@tailwindcss/vite'; export default {plugins:[tailwind()]};");
+  const plugin = utilities ? "import tailwind from '@tailwindcss/vite';" : '';
+  const plugins = utilities ? 'tailwind()' : '';
+  await writeFile(path.join(folder, 'vite.config.js'),
+    plugin + " export default {esbuild:{jsx:'automatic'}, plugins:[" + plugins + "]};");
   if (variant === 'shadcn') {
     for (const [file, sha] of Object.entries(registry)) {
       const url = 'https://raw.githubusercontent.com/shadcn-ui/ui/' + registryRef + '/apps/v4/registry/bases/base/ui/' + file + '.tsx';
@@ -171,7 +173,7 @@ async function measure(browser, variant, result) {
     for (let i = 0; i < 5; i++) {
       const page = await browser.newPage({ viewport: { width: 960, height: 780 } });
       const errors = [];
-      page.on('pageerror', err => errors.push(err.message));
+      page.on('pageerror', err => { errors.push(err.message); console.error(variant, err.message); });
       await page.route('**/*', route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
       await page.goto(origin);
       await page.getByRole('row').nth(20).waitFor();

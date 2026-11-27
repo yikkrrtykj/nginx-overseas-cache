@@ -26,6 +26,7 @@ for cmd in nginx systemctl flock install runuser awk dpkg; do command -v "$cmd" 
 if [[ $action == install ]]; then
     version=$(nginx -v 2>&1)
     version=${version##*/}
+    version=${version%% *}
     dpkg --compare-versions "$version" ge 1.19.3 || die 'Nginx 1.19.3 or newer is required'
 fi
 

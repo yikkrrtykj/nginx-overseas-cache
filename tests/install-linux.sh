@@ -129,4 +129,4 @@ echo 'V1 upgrade, injected install failure, and V2-to-V1 rollback passed'
 sudo systemctl stop v2-fixture-origin.service
 sudo /opt/ws-fanout/venv/bin/python "$root/tests/compare_fanout.py" \
     --v1 "$tmp/ws-fanout/ws_fanout.py" --v2 "$package/bin/ws-fanout" \
-    --cert "$tmp/cert.pem" --key "$tmp/key.pem" --output "$root/artifacts/install/fanout-v1-v2.json"
+    --cert "$tmp/cert.pem" --key "$tmp/key.pem" --output "$root/artifacts/install/fanout-v1-v2.json" --soak-seconds 60

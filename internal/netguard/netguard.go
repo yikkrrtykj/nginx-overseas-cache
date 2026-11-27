@@ -10,12 +10,18 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"golang.org/x/net/idna"
 )
 
 var hostnamePattern = regexp.MustCompile("^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 func Hostname(value string) (string, error) {
-	host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(value)), ".")
+	ascii, err := idna.Lookup.ToASCII(strings.TrimSpace(value))
+	if err != nil {
+		return "", errors.New("expected a DNS hostname")
+	}
+	host := strings.TrimSuffix(strings.ToLower(ascii), ".")
 	if _, err := netip.ParseAddr(host); err == nil || len(host) > 253 || !hostnamePattern.MatchString(host) {
 		return "", errors.New("expected a DNS hostname")
 	}

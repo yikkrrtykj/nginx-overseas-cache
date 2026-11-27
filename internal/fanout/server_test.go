@@ -324,3 +324,57 @@ func BenchmarkFanout(b *testing.B) {
 		})
 	}
 }
+
+func TestConcurrentJoinsAndLeaves(t *testing.T) {
+	s, base, opened, count := fixture(t, DefaultConfig())
+	anchor := join(t, base, "origin.example", "fixture-concurrent", "arena", "onair", "anchor")
+	p := upstream(t, opened)
+	p.ack(t)
+	expectAck(t, anchor, "anchor")
+
+	const waves, peers = 4, 50
+	headers := http.Header{"X-Fanout-Upstream-Base": {"wss://origin.example/ws"}, "X-Fanout-Upstream-Origin": {"https://origin.example"}}
+	for wave := 0; wave < waves; wave++ {
+		results := make(chan error, peers)
+		start := make(chan struct{})
+		for index := 0; index < peers; index++ {
+			id := fmt.Sprintf("wave-%d-%d", wave, index)
+			go func() {
+				<-start
+				c, _, err := websocket.DefaultDialer.DialContext(t.Context(), base+"?token=fixture-concurrent", headers)
+				if err != nil {
+					results <- err
+					return
+				}
+				defer c.Close()
+				c.SetWriteDeadline(time.Now().Add(4 * time.Second))
+				c.SetReadDeadline(time.Now().Add(4 * time.Second))
+				err = c.WriteJSON(map[string]any{"action": "join", "trxId": id, "data": map[string]string{"channelId": "arena", "rendererMode": "onair"}})
+				if err != nil {
+					results <- err
+					return
+				}
+				_, payload, err := c.ReadMessage()
+				if err == nil {
+					m := parse(payload)
+					if m.Action != "join_res" || scalar(m.TrxID) != id {
+						err = fmt.Errorf("invalid concurrent acknowledgement")
+					}
+				}
+				results <- err
+			}()
+		}
+		close(start)
+		for index := 0; index < peers; index++ {
+			if err := <-results; err != nil {
+				t.Error(err)
+			}
+		}
+		eventually(t, func() bool { return s.Snapshot().LocalClients == 1 })
+	}
+	if count.Load() != 1 {
+		t.Fatalf("unexpected number of upstream joins: %d", count.Load())
+	}
+	anchor.Close()
+	eventually(t, func() bool { return s.Snapshot().ActiveHubs == 0 })
+}

@@ -36,3 +36,13 @@ func TestPinAndRejectMixedAnswers(t *testing.T) {
 		}
 	}
 }
+
+func TestHostnameIDNA(t *testing.T) {
+	host, err := Hostname("Bücher.Example.")
+	if err != nil || host != "xn--bcher-kva.example" {
+		t.Fatalf("IDNA conversion: %q, %v", host, err)
+	}
+	if _, err := Hostname("１２７。０。０。１"); err == nil {
+		t.Fatal("IDNA-mapped address accepted")
+	}
+}

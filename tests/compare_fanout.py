@@ -78,7 +78,7 @@ async def until(predicate, seconds=10):
     raise RuntimeError("benchmark fixture timed out")
 
 
-async def run_case(command, name, count, group_count, size, messages, cert, portable):
+async def run_case(command, name, count, group_count, size, messages, cert, portable, soak_seconds=0):
     origin = {}
     opened = 0
 
@@ -108,11 +108,11 @@ async def run_case(command, name, count, group_count, size, messages, cert, port
             runner_environment = {"OVERSEAS_BENCH_LOOPBACK": f"127.0.0.1:{peer[1]}",
                                   "OVERSEAS_BENCH_HOSTNAME": host}
         return await run_relay(command, name, count, group_count, size, messages, cert,
-                               port, host, runner_environment, origin, lambda: opened)
+                               port, host, runner_environment, origin, lambda: opened, soak_seconds)
 
 
 async def run_relay(command, name, count, group_count, size, messages, cert, port,
-                    host, runner_environment, origin, opened):
+                    host, runner_environment, origin, opened, soak_seconds):
     with tempfile.TemporaryDirectory(prefix="fanout-bench-") as tmp:
         status_file = Path(tmp) / "status.json"
         process = await asyncio.create_subprocess_exec(
@@ -151,7 +151,10 @@ async def run_relay(command, name, count, group_count, size, messages, cert, por
             joined = readings(process.pid)
             totals = []
             start = time.perf_counter()
-            for sequence in range(messages):
+            rss_samples = []
+            record_after = 0
+            sequence = 0
+            while sequence < messages or (soak_seconds and time.perf_counter() - start < soak_seconds):
                 packet = sequence.to_bytes(4, "big") + b"z" * (size - 4)
                 indices = [index for index in range(count) if index % group_count == sequence % group_count]
                 sent = time.perf_counter()
@@ -163,6 +166,13 @@ async def run_relay(command, name, count, group_count, size, messages, cert, por
 
                 await origin[f"case-token-{sequence % group_count}"].send(packet)
                 totals.extend(await asyncio.gather(*(received(clients[i]) for i in indices)))
+                sequence += 1
+                if soak_seconds:
+                    current = time.perf_counter() - start
+                    if current >= record_after:
+                        rss_samples.append({"seconds": round(current, 2), "rssKiB": readings(process.pid)[1]})
+                        record_after += 5
+                    await asyncio.sleep(max(0, sequence * .1 - current))
 
             elapsed = time.perf_counter() - start
             steady = readings(process.pid)
@@ -173,7 +183,8 @@ async def run_relay(command, name, count, group_count, size, messages, cert, por
             after = readings(process.pid)
             totals.sort()
             return {
-                "runtime": name,
+                "runtime": name, "case": "soak" if soak_seconds else "burst",
+                "wallSeconds": round(elapsed, 3), "rssSamples": rss_samples,
                 "clients": count,
                 "groups": group_count,
                 "payloadBytes": size,
@@ -215,6 +226,11 @@ async def main(args):
                 result = await run_case(command, name, clients, groups, payload, args.messages, args.cert, args.portable)
                 print(json.dumps(result), flush=True)
                 results.append(result)
+    if args.soak_seconds:
+        for name, command in (("V1", v1), ("V2", v2)):
+            result = await run_case(command, name, 300, 5, 16384, 0, args.cert, args.portable, args.soak_seconds)
+            print(json.dumps(result), flush=True)
+            results.append(result)
     Path(args.output).write_text(json.dumps(results, indent=2) + "\n")
 
 
@@ -226,5 +242,6 @@ if __name__ == "__main__":
     parser.add_argument("--key", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--portable", action="store_true", help="use a Go test binary and a loopback TLS fixture")
+    parser.add_argument("--soak-seconds", type=int, default=0)
     parser.add_argument("--messages", type=int, default=80)
     asyncio.run(main(parser.parse_args()))
