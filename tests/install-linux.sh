@@ -125,6 +125,10 @@ check_services
 login "$password"
 install uninstall
 [[ $(systemctl is-active overseas-cache-admin.service || true) != active ]]
+if sudo journalctl -u overseas-cache-config.service --no-pager --grep 'stop-sigterm.*timed out' -q; then
+    echo 'The configuration helper did not shut down gracefully' >&2
+    exit 1
+fi
 echo 'Repeat install, real config apply, restarts and uninstall passed'
 
 git archive 0e2bb77bdacc4e1f825858a0d59e2070828dd1b7 | tar -xf - -C "$tmp"
@@ -152,6 +156,7 @@ sudo nginx -t -q
 login "$legacy_password"
 install rollback
 systemctl is-active --quiet overseas-cache-admin.service
+curl_local --retry 8 --retry-connrefused --retry-delay 1 "http://$admin/login" >/dev/null
 login "$legacy_password"
 sudo cmp /etc/nginx/overseas-cache/settings.conf "$tmp/old-settings"
 sudo test -f /var/cache/nginx/web_cache/fixture-sentinel

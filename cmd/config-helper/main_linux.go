@@ -147,17 +147,22 @@ func main() {
 
 	server := &http.Server{Handler: configstore.RPC(s), MaxHeaderBytes: 8 << 10, ReadHeaderTimeout: 2 * time.Second,
 		ReadTimeout: 5 * time.Second, WriteTimeout: 78 * time.Second, IdleTimeout: 5 * time.Second}
+	shutdown := make(chan error, 1)
 	go func() {
 		<-ctx.Done()
 		closeCtx, cancel := context.WithTimeout(context.Background(), 76*time.Second)
 		defer cancel()
-		server.Shutdown(closeCtx)
+		shutdown <- server.Shutdown(closeCtx)
 	}()
 	if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
-	// Shutdown closes the listener first. Wait for the serialized transaction.
+	// Shutdown waits for active handlers. Startup recovers any transaction
+	// left on disk. Taking the file lock here would deadlock an installer
+	// that already holds the lock and is stopping the helper.
 	if ctx.Err() != nil {
-		s.Recover(context.Background())
+		if err := <-shutdown; err != nil {
+			log.Printf("configuration helper shutdown: %v", err)
+		}
 	}
 }
