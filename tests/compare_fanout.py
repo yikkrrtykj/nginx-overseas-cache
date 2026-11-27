@@ -78,7 +78,7 @@ async def until(predicate, seconds=10):
     raise RuntimeError("benchmark fixture timed out")
 
 
-async def run_case(command, name, count, group_count, size, messages, cert, portable, soak_seconds=0):
+async def run_case(command, name, count, group_count, size, messages, cert, portable, soak_seconds=0, slow_client=False):
     origin = {}
     opened = 0
 
@@ -108,11 +108,11 @@ async def run_case(command, name, count, group_count, size, messages, cert, port
             runner_environment = {"OVERSEAS_BENCH_LOOPBACK": f"127.0.0.1:{peer[1]}",
                                   "OVERSEAS_BENCH_HOSTNAME": host}
         return await run_relay(command, name, count, group_count, size, messages, cert,
-                               port, host, runner_environment, origin, lambda: opened, soak_seconds)
+                               port, host, runner_environment, origin, lambda: opened, soak_seconds, slow_client)
 
 
 async def run_relay(command, name, count, group_count, size, messages, cert, port,
-                    host, runner_environment, origin, opened, soak_seconds):
+                    host, runner_environment, origin, opened, soak_seconds, slow_client):
     with tempfile.TemporaryDirectory(prefix="fanout-bench-") as tmp:
         status_file = Path(tmp) / "status.json"
         process = await asyncio.create_subprocess_exec(
@@ -127,11 +127,22 @@ async def run_relay(command, name, count, group_count, size, messages, cert, por
             before = readings(process.pid)
             for index in range(count):
                 token = f"case-token-{index % group_count}"
+                options = {}
+                if slow_client and index == 0:
+                    peer = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    peer.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
+                    peer.setblocking(False)
+                    try:
+                        await asyncio.get_running_loop().sock_connect(peer, ("127.0.0.1", port))
+                    except BaseException:
+                        peer.close()
+                        raise
+                    options["sock"] = peer
                 ws = await connect(
                     f"ws://127.0.0.1:{port}/ws?token={token}",
                     additional_headers={"X-Fanout-Upstream-Base": f"wss://{host}/ws",
                                         "X-Fanout-Upstream-Origin": f"https://{host}"},
-                    compression=None, proxy=None,
+                    compression=None, proxy=None, **options,
                 )
                 clients.append(ws)
                 await ws.send(json.dumps({"action": "join", "trxId": str(index + 1),
@@ -149,6 +160,9 @@ async def run_relay(command, name, count, group_count, size, messages, cert, por
 
             await until(published)
             joined = readings(process.pid)
+            if slow_client:
+                return await measure_slow_client(name, clients, origin, opened, size, messages,
+                                                 status_file, process.pid, joined)
             totals = []
             start = time.perf_counter()
             rss_samples = []
@@ -179,7 +193,7 @@ async def run_relay(command, name, count, group_count, size, messages, cert, por
             snapshot = json.loads(status_file.read_text())
             await asyncio.gather(*(ws.close() for ws in clients))
             await until(lambda: not origin)
-            await asyncio.sleep(.15)
+            released = await released_status(status_file)
             after = readings(process.pid)
             totals.sort()
             return {
@@ -195,6 +209,7 @@ async def run_relay(command, name, count, group_count, size, messages, cert, por
                 "rssIdleKiB": before[1], "rssJoinedKiB": joined[1],
                 "rssPostTrafficKiB": steady[1], "rssAfterDisconnectKiB": after[1],
                 "goroutines": snapshot.get("goroutines"),
+                "goroutinesAfterDisconnect": released.get("goroutines"),
                 **{f"p{q}DeliveryMs": round(totals[math.ceil(len(totals) * q / 100) - 1], 3) for q in (50, 95, 99)},
             }
         finally:
@@ -205,6 +220,79 @@ async def run_relay(command, name, count, group_count, size, messages, cert, por
                 except TimeoutError:
                     process.kill()
                     await process.wait()
+
+
+async def released_status(status_file):
+    def published():
+        try:
+            current = json.loads(status_file.read_text())
+            if current["localClients"] == current["upstreamConnections"] == 0:
+                return current
+        except (OSError, ValueError, KeyError):
+            pass
+        return None
+
+    await until(published)
+    return published()
+
+
+async def measure_slow_client(name, clients, origin, opened, size, messages, status_file, pid, joined):
+    """Drive two groups at the same pace while client 0 stops reading."""
+    slow = clients[0]
+    slow.transport.pause_reading()
+    payload = b"z" * (size - 4)
+    deliveries = [0] * len(clients)
+    start = time.perf_counter()
+
+    async def emit(group):
+        ws = origin[f"case-token-{group}"]
+        for seq in range(messages):
+            await ws.send(seq.to_bytes(4, "big") + payload)
+            await asyncio.sleep(max(0, start + (seq + 1) * .01 - time.perf_counter()))
+
+    async def collect(index):
+        for seq in range(messages):
+            received = await clients[index].recv()
+            assert received == seq.to_bytes(4, "big") + payload, "slow fixture delivery out of order"
+            deliveries[index] += 1
+
+    workers = [asyncio.create_task(emit(group)) for group in range(2)]
+    workers.extend(asyncio.create_task(collect(index)) for index in range(1, len(clients)))
+    try:
+        # Leave time for the publisher to record disconnections as well as delivery.
+        await asyncio.sleep(messages * .01 + 2)
+        complete = [task.done() and not task.cancelled() for task in workers]
+        for task, done in zip(workers, complete):
+            if done:
+                task.result()
+        sample = json.loads(status_file.read_text())
+        if name == "V2":
+            assert all(complete), "slow websocket stalled V2 delivery"
+            assert sample.get("slowDisconnects") == 1 and sample["localClients"] == len(clients) - 1
+        assert opened() == 2, "slow client caused unexpected upstream connection"
+        elapsed = time.perf_counter() - start
+        during = readings(pid)
+    finally:
+        for task in workers:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
+        slow.transport.abort()
+        await asyncio.gather(*(ws.close() for ws in clients[1:]))
+
+    await until(lambda: not origin)
+    released = await released_status(status_file)
+    return {
+        "runtime": name, "case": "slow-client", "clients": len(clients), "groups": 2,
+        "payloadBytes": size, "messagesOfferedPerGroup": messages, "wallSeconds": round(elapsed, 3),
+        "deliveriesByFastClient": deliveries[1:], "groupsByFastClient": [1, 0, 1],
+        "upstreamSendsCompletedByGroup": complete[:2], "activeAtDeadline": sample["localClients"],
+        "slowDisconnects": sample.get("slowDisconnects"), "queueOverflows": sample.get("queueOverflows"),
+        "upstreamConnectionAttempts": opened(),
+        "meanRelayCpuPct": round((during[0] - joined[0]) / elapsed * 100, 1),
+        "rssPostTrafficKiB": during[1], "rssAfterDisconnectKiB": readings(pid)[1],
+        "goroutines": sample.get("goroutines"), "goroutinesAfterDisconnect": released.get("goroutines"),
+    }
 
 
 async def main(args):
@@ -226,6 +314,10 @@ async def main(args):
                 result = await run_case(command, name, clients, groups, payload, args.messages, args.cert, args.portable)
                 print(json.dumps(result), flush=True)
                 results.append(result)
+    for name, command in (("V1", v1), ("V2", v2)):
+        result = await run_case(command, name, 4, 2, 100 << 10, 100, args.cert, args.portable, slow_client=True)
+        print(json.dumps(result), flush=True)
+        results.append(result)
     if args.soak_seconds:
         for name, command in (("V1", v1), ("V2", v2)):
             result = await run_case(command, name, 300, 5, 16384, 0, args.cert, args.portable, args.soak_seconds)
