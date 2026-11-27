@@ -142,6 +142,12 @@ for account in overseas-admin overseas-fanout; do
 done
 install -d -m 0700 -o overseas-admin -g overseas-admin "$state"
 install -d -m 0755 "$app/bin" /var/log/overseas-cache
+# On a fresh host the cache parent can be absent. Create it with explicit
+# traversal permission for the packaged Nginx worker account.
+if [[ ! -d /var/cache/nginx ]]; then
+    install -d -m 0750 -o root -g www-data /var/cache/nginx
+fi
+runuser -u www-data -- test -x /var/cache/nginx || die 'Nginx workers cannot traverse /var/cache/nginx'
 install -d -m 0750 -o www-data -g www-data /var/cache/nginx/web_cache
 if [[ ! -e /var/log/overseas-cache/traffic.log ]]; then
     install -m 0640 -o www-data -g overseas-admin /dev/null /var/log/overseas-cache/traffic.log

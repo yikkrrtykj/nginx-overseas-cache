@@ -18,6 +18,7 @@ diagnostics() {
     sudo journalctl -u nginx -u overseas-cache-config -u overseas-cache-admin --no-pager -n 50 || true
     sudo journalctl -k --no-pager -n 20 --grep 'apparmor="DENIED"' || true
     sudo tail -n 15 /var/log/overseas-cache/traffic.log || true
+    sudo namei -l /var/cache/nginx/web_cache || true
 }
 trap 'diagnostics "$LINENO"' ERR
 tar -xzf "$(find dist -maxdepth 1 -name '*-linux-amd64.tar.gz' -print -quit)" -C "$tmp"
@@ -52,8 +53,8 @@ check_services() {
     for service in overseas-cache-admin.service ws-fanout.service nginx.service; do
         systemctl is-active --quiet "$service"
     done
-    curl_local "http://$relay/healthz"
-    curl_local "http://$admin/healthz"
+    curl_local --retry 8 --retry-connrefused --retry-delay 1 "http://$relay/healthz"
+    curl_local --retry 8 --retry-connrefused --retry-delay 1 "http://$admin/healthz"
 }
 cache_status() {
     curl_local --write-out "\\nfixture cache request %{url_effective}: HTTP %{http_code}\\n" -D - -o /dev/null "$@" | awk 'tolower($1)=="x-cache-status:" {gsub("\r","",$2); print $2} /^fixture cache request/ { print > "/dev/stderr" }'
@@ -75,7 +76,17 @@ done
 first=$(curl_local "http://$data/render")
 second=$(curl_local "http://$data/render")
 [[ $first != "$second" ]]
-[[ $(cache_status "http://$data/templates/sample.woff2") == MISS ]]
+if [[ $(cache_status "http://$data/templates/sample.woff2") != MISS ]]; then
+    diagnostics "$LINENO"
+    # Only a failed hosted fixture enables the raw error log for one
+    # synthetic, credential-free cache request.
+    sudo sed -i 's@error_log /dev/null crit;@error_log /var/log/nginx/overseas-fixture-error.log error;@' \
+        /etc/nginx/sites-available/overseas-cache
+    sudo systemctl reload nginx
+    for _ in {1..5}; do curl -sS --noproxy '*' -o /dev/null "http://$data/templates/sample.woff2"; sleep 0.2; done
+    sudo tail -n 15 /var/log/nginx/overseas-fixture-error.log || true
+    exit 1
+fi
 [[ $(cache_status "http://$data/templates/sample.woff2") == HIT ]]
 [[ $(cache_status -H 'Cookie: fixture=personal' "http://$data/templates/sample.woff2") == BYPASS ]]
 [[ $(cache_status -H 'Authorization: Bearer fixture' "http://$data/templates/sample.woff2") == BYPASS ]]
