@@ -1,0 +1,13 @@
+[Unit]
+Description=Overseas Cache privileged configuration socket
+
+[Socket]
+ListenStream=/run/overseas-cache-config.sock
+SocketUser=overseas-admin
+SocketGroup=overseas-admin
+SocketMode=0600
+RemoveOnStop=yes
+Backlog=16
+
+[Install]
+WantedBy=sockets.target

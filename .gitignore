@@ -23,3 +23,12 @@ Thumbs.db
 # Python bytecode generated while validating the local admin service.
 __pycache__/
 *.py[cod]
+
+# V2 local configuration and generated files.
+admin-v2.env
+fanout-v2.env
+.venv/
+/web/node_modules/
+/web/static/assets/*.js
+/dist/
+/artifacts/

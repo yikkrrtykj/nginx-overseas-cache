@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Overseas Cache · 登录</title>
+<link rel="stylesheet" href="/app.css">
+<script type="module" src="/assets/login.js"></script>
+</head>
+<body class="login">
+<main class="login-box panel">
+  <div class="brand"><svg width="24" height="24" aria-hidden="true"><use href="/assets/icons.svg#network"></use></svg><div>Overseas Cache<span>运维控制台</span></div></div>
+  <h1>登录控制台</h1>
+  <form id="login-form">
+    <label>用户名<input id="username" name="username" maxlength="64" autocomplete="username" required autofocus></label>
+    <label>密码<input id="password" name="password" type="password" maxlength="256" autocomplete="current-password" required></label>
+    <p class="notice" role="alert" id="login-error" hidden></p>
+    <button class="primary" id="sign-in" type="submit">登录</button>
+  </form>
+</main>
+</body>
+</html>
