@@ -21,7 +21,13 @@ paths=("$upstream" "$site" "$enabled" "$etc/settings.conf" "$etc/admin-password.
     "$etc/admin-v2.env" "$state/admin-password.json" "$app"
     /etc/logrotate.d/overseas-cache-v2)
 for unit in "${units[@]}"; do paths+=("/etc/systemd/system/$unit"); done
-for cmd in nginx systemctl flock install runuser awk; do command -v "$cmd" >/dev/null || die "missing $cmd"; done
+for cmd in nginx systemctl flock install runuser awk dpkg; do command -v "$cmd" >/dev/null || die "missing $cmd"; done
+
+if [[ $action == install ]]; then
+    version=$(nginx -v 2>&1)
+    version=${version##*/}
+    dpkg --compare-versions "$version" ge 1.19.3 || die 'Nginx 1.19.3 or newer is required'
+fi
 
 mkdir -p "$history" "$etc" "$etc/backups"
 chmod 700 "$history" "$etc" "$etc/backups"

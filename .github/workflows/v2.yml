@@ -13,6 +13,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-go@v6
         with:
           go-version: '1.27.4'
@@ -30,6 +33,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
@@ -41,6 +47,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-go@v6
         with:
           go-version: '1.27.4'
@@ -65,13 +74,16 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-go@v6
         with:
           go-version: '1.27.4'
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
-      - run: bash scripts/build-release.sh "${GITHUB_SHA:0:12}"
+      - run: bash scripts/build-release.sh
       - run: (cd dist && sha256sum --check SHA256SUMS)
       - uses: actions/upload-artifact@v6
         with:
@@ -84,10 +96,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, ubuntu-24.04]
+        os: [ubuntu-24.04, ubuntu-26.04]
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
           fetch-depth: 0
       - uses: actions/download-artifact@v7
         with:
@@ -107,7 +121,30 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-go@v6
         with:
           go-version: '1.27.4'
-      - run: go run github.com/zricethezav/gitleaks/v8@v8.28.0 dir --redact --no-banner .
+      - run: go run github.com/zricethezav/gitleaks/v8@v8.28.0 dir --redact=100 --verbose --no-banner .
+
+  ui-prototypes:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - run: npm --prefix web ci --ignore-scripts
+      - run: node web/node_modules/playwright-core/cli.js install --with-deps chromium
+      - run: node tests/ui-prototypes.mjs
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: ui-prototypes
+          path: artifacts/ui-prototypes/
+          if-no-files-found: error

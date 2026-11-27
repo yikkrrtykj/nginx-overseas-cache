@@ -1,6 +1,6 @@
 [Unit]
 Description=Overseas Cache Nginx configuration helper
-Requires=overseas-cache-config.socket
+Requires=overseas-cache-config.socket nginx.service
 After=nginx.service overseas-cache-config.socket
 
 [Service]
@@ -29,3 +29,4 @@ SystemCallArchitectures=native
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ReadWritePaths=/etc/nginx/conf.d /etc/nginx/overseas-cache
 ReadWritePaths=/var/log/nginx /var/log/overseas-cache /var/cache/nginx
+ReadWritePaths=-/var/lib/nginx /run/nginx.pid

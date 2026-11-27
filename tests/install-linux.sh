@@ -12,6 +12,7 @@ cleanup() {
     rm -rf -- "$tmp"
 }
 trap cleanup EXIT
+trap 'sudo journalctl -u nginx -u overseas-cache-config -u overseas-cache-admin --no-pager -n 50' ERR
 tar -xzf "$(find dist -maxdepth 1 -name '*-linux-amd64.tar.gz' -print -quit)" -C "$tmp"
 package=$(find "$tmp" -maxdepth 1 -type d -name 'nginx-overseas-cache-*' -print -quit)
 [[ -x $package/bin/overseas-admin ]]
@@ -84,9 +85,9 @@ check_services
 login "$password"
 curl_local -b "$tmp/cookies" "http://$admin/api/v2/config" > "$tmp/config"
 nonce=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["csrfToken"])' < "$tmp/config")
-curl_local -b "$tmp/cookies" -H "Origin: http://$admin" -H "X-CSRF-Token: $nonce" -H 'Content-Type: application/json' \
+curl --noproxy '*' --fail-with-body --silent --show-error --max-time 75 -b "$tmp/cookies" -H "Origin: http://$admin" -H "X-CSRF-Token: $nonce" -H 'Content-Type: application/json' \
     --data '{"originHost":"origin-v2.example","cdnHost":"cdn-v2.example","channelId":"fixture","accountId":"render","token":"synthetic-installed-token"}' \
-    "http://$admin/api/v2/config" > "$tmp/saved"
+    "http://$admin/api/v2/config" > "$tmp/saved" || { cat "$tmp/saved"; sudo journalctl -u overseas-cache-config --no-pager -n 30; exit 1; }
 python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["ok"] and r["backup"] and r["config"]["tokenPresent"]; assert "token" not in r["config"]' < "$tmp/saved"
 sudo systemctl restart overseas-cache-admin.service ws-fanout.service
 check_services
