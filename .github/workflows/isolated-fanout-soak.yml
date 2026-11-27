@@ -27,14 +27,14 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 2
+          fetch-depth: 3
           persist-credentials: false
       - uses: actions/setup-go@v6
         with:
           go-version: '1.27.4'
       - name: Bind the instrumented test to the exact main baseline
         run: |
-          test "$(git rev-parse HEAD^)" = "$SOAK_MAIN"
+          git merge-base --is-ancestor "$SOAK_MAIN" HEAD
           test "$(git rev-parse "$SOAK_MAIN^{tree}")" = "$SOAK_TREE"
           git diff --exit-code "$SOAK_MAIN" -- go.mod go.sum internal ':!internal/fanout/soak_*_test.go'
           mkdir -p "$SOAK_OUTPUT"
@@ -47,10 +47,44 @@ jobs:
       - name: Run the full-duration loopback matrix scenario
         run: |
           set -o pipefail
+          export SOAK_OUTPUT="$PWD/$SOAK_OUTPUT"
           go test -mod=readonly -count=1 -v -run '^TestIsolatedHourlySoak$' -timeout 2h10m ./internal/fanout | tee "$SOAK_OUTPUT/driver.log"
+          test -s "$SOAK_OUTPUT/samples.jsonl"
+          test -s "$SOAK_OUTPUT/summary.json"
       - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: isolated-soak-${{ matrix.id }}
           path: ${{ env.SOAK_OUTPUT }}
+          if-no-files-found: error
+  report:
+    needs: fanout
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: isolated-soak-*
+          path: .soak-input
+      - name: Validate actual samples and render resource curves
+        run: |
+          for case in 30c-1g-2h 100c-5g-1h 300c-5g-1h; do
+            test -s ".soak-input/isolated-soak-$case/samples.jsonl"
+            test -s ".soak-input/isolated-soak-$case/summary.json"
+            mv -- ".soak-input/isolated-soak-$case" ".soak-input/$case"
+          done
+          python -m pip install --disable-pip-version-check matplotlib==3.10.8
+          python tests/analyze-isolated-soak.py --source .soak-input --output .soak-report --label 'Ubuntu 24.04 amd64'
+          cat .soak-report/aggregate.json
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: isolated-resource-report
+          path: .soak-report/
+          include-hidden-files: true
           if-no-files-found: error
