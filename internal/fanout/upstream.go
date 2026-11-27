@@ -53,7 +53,7 @@ func (s *Server) runHub(h *hub) {
 func (s *Server) runGeneration(h *hub, conn *websocket.Conn) bool {
 	defer conn.Close()
 	ctx, cancel := context.WithCancel(h.ctx)
-	up := &connection{conn: conn, ctx: ctx, cancel: cancel, queue: newQueue()}
+	up := &connection{ctx: ctx, cancel: cancel, queue: newQueue()}
 	defer cancel()
 	stopAbort := context.AfterFunc(ctx, func() { abortSocket(conn) })
 	defer stopAbort()

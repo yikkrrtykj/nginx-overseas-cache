@@ -102,7 +102,6 @@ type hub struct {
 }
 
 type connection struct {
-	conn   *websocket.Conn
 	ctx    context.Context
 	cancel context.CancelFunc
 	queue  queue
@@ -399,8 +398,12 @@ func (s *Server) pop(q *queue) (packet, bool) {
 		return packet{}, false
 	}
 	p := q.packets[0]
-	q.packets[0] = packet{}
-	q.packets = q.packets[1:]
+	// Reuse the backing storage across bursts. The common case reaches
+	// length zero after each write, and the queue has a fixed upper bound.
+	copy(q.packets, q.packets[1:])
+	tail := len(q.packets) - 1
+	q.packets[tail] = packet{}
+	q.packets = q.packets[:tail]
 	return p, true
 }
 
