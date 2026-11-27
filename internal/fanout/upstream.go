@@ -55,6 +55,8 @@ func (s *Server) runGeneration(h *hub, conn *websocket.Conn) bool {
 	ctx, cancel := context.WithCancel(h.ctx)
 	up := &connection{conn: conn, ctx: ctx, cancel: cancel, queue: newQueue()}
 	defer cancel()
+	stopAbort := context.AfterFunc(ctx, func() { abortSocket(conn) })
+	defer stopAbort()
 
 	s.prepareReader(conn)
 	s.mu.Lock()
@@ -80,9 +82,10 @@ func (s *Server) runGeneration(h *hub, conn *websocket.Conn) bool {
 		h.upstream, h.ack, h.last = nil, nil, packet{}
 		h.seen, h.responseIDs = nil, nil
 		for c := range h.clients {
-			// A queued or in-flight frame may belong to the departed generation.
-			// Close this peer and require a new join instead of skipping frames.
-			if len(c.queue.packets) > 0 || c.queue.inFlight {
+			// A response can arrive after its call has already been written.
+			// Require a fresh downstream socket whenever a peer could have
+			// observed this generation, including reused transaction IDs.
+			if c.deliveryGeneration == h.generation {
 				s.disconnect(c)
 			}
 			c.synchronized, c.ackSent = false, false
@@ -91,7 +94,7 @@ func (s *Server) runGeneration(h *hub, conn *websocket.Conn) bool {
 		up.cancel()
 		s.clearQueue(&up.queue)
 		s.mu.Unlock()
-		conn.Close()
+		abortSocket(conn)
 		<-writerDone
 	}()
 
@@ -109,6 +112,10 @@ func (s *Server) runGeneration(h *hub, conn *websocket.Conn) bool {
 			break
 		}
 		s.mu.Lock()
+		if ctx.Err() != nil {
+			s.mu.Unlock()
+			break
+		}
 		ok := s.fromUpstream(h, p)
 		acknowledged = len(h.ack) > 0
 		s.mu.Unlock()
@@ -145,6 +152,9 @@ func (s *Server) synchronize(h *hub, c *client) {
 		s.downstream(c, last)
 	}
 	c.synchronized = c.ctx.Err() == nil
+	if c.synchronized {
+		c.deliveryGeneration = h.generation
+	}
 }
 
 func (s *Server) fromUpstream(h *hub, p packet) bool {
@@ -204,7 +214,7 @@ func (s *Server) fromClient(h *hub, c *client, p packet) bool {
 	if m.Action != "call_res" && h.leader != c {
 		return true
 	}
-	if h.upstream == nil || !c.synchronized {
+	if h.upstream == nil || h.upstream.ctx.Err() != nil || !c.synchronized {
 		// A call response belongs to the old generation. Other leader events
 		// require explicit rejoin so no critical message is silently discarded.
 		return m.Action == "call_res"
@@ -221,7 +231,6 @@ func (s *Server) fromClient(h *hub, c *client, p packet) bool {
 	}
 	if !s.push(&h.upstream.queue, p) {
 		h.upstream.cancel()
-		h.upstream.conn.Close()
 		return false
 	}
 	if trx != "" {

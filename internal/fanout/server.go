@@ -4,6 +4,7 @@ package fanout
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"errors"
 	"io"
 	"net"
@@ -63,23 +64,23 @@ type packet struct {
 }
 
 type queue struct {
-	wake     chan struct{}
-	packets  []packet
-	bytes    int // Includes bytes held by an in-progress write.
-	inFlight bool
+	wake    chan struct{}
+	packets []packet
+	bytes   int // Includes bytes held by an in-progress write.
 }
 
 func newQueue() queue { return queue{wake: make(chan struct{}, 1)} }
 
 type client struct {
-	conn         *websocket.Conn
-	ctx          context.Context
-	cancel       context.CancelFunc
-	queue        queue
-	order        uint64
-	trx          string
-	synchronized bool
-	ackSent      bool
+	conn               *websocket.Conn
+	ctx                context.Context
+	cancel             context.CancelFunc
+	queue              queue
+	order              uint64
+	trx                string
+	deliveryGeneration uint64
+	synchronized       bool
+	ackSent            bool
 }
 
 type hub struct {
@@ -190,6 +191,8 @@ func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 	c.conn = conn
 	s.mu.Unlock()
 	defer conn.Close()
+	stopAbort := context.AfterFunc(c.ctx, func() { abortSocket(conn) })
+	defer stopAbort()
 	if c.ctx.Err() != nil {
 		return
 	}
@@ -224,9 +227,6 @@ func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 		}
 		if len(h.clients) == 0 {
 			h.cancel()
-			if h.upstream != nil {
-				h.upstream.conn.Close()
-			}
 		}
 		s.mu.Unlock()
 		<-done
@@ -303,9 +303,16 @@ func (s *Server) reject(conn *websocket.Conn, reason string) {
 func (s *Server) disconnect(c *client) {
 	c.cancel()
 	s.clearQueue(&c.queue)
-	if c.conn != nil {
-		c.conn.Close()
+}
+
+// Cancelled connections can have blocked readers or writers. Closing the
+// transport directly also avoids waiting for a TLS close_notify write.
+func abortSocket(conn *websocket.Conn) {
+	transport := conn.UnderlyingConn()
+	if secure, ok := transport.(*tls.Conn); ok {
+		transport = secure.NetConn()
 	}
+	transport.Close()
 }
 
 func (s *Server) prepareReader(conn *websocket.Conn) {
@@ -394,7 +401,6 @@ func (s *Server) pop(q *queue) (packet, bool) {
 	p := q.packets[0]
 	q.packets[0] = packet{}
 	q.packets = q.packets[1:]
-	q.inFlight = true
 	return p, true
 }
 
@@ -426,7 +432,6 @@ func (s *Server) writeLoop(ctx context.Context, conn *websocket.Conn, q *queue, 
 					err = conn.WriteMessage(p.kind, p.body)
 				}
 				s.mu.Lock()
-				q.inFlight = false
 				q.bytes -= len(p.body)
 				s.retainedQueue -= len(p.body)
 				if c != nil && err == nil {
@@ -463,11 +468,6 @@ func (s *Server) Close(ctx context.Context) error {
 	s.cancel()
 	for c := range s.clients {
 		s.disconnect(c)
-	}
-	for _, h := range s.hubs {
-		if h.upstream != nil {
-			h.upstream.conn.Close()
-		}
 	}
 	s.mu.Unlock()
 	done := make(chan struct{})

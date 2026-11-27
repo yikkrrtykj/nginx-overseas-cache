@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -172,37 +173,62 @@ func TestSharedJoinOrderedReplayReconnectionAndHandoff(t *testing.T) {
 		t.Fatalf("leader handoff or duplicate response: %v", body)
 	}
 	p.conn.Close()
-	reconnected := upstream(t, opened)
+	second.SetReadDeadline(time.Now().Add(4 * time.Second))
+	_, _, closeErr := second.ReadMessage()
+	var timeout net.Error
+	if closeErr == nil || (errors.As(closeErr, &timeout) && timeout.Timeout()) {
+		t.Fatalf("old downstream survived the upstream generation: %v", closeErr)
+	}
+
 	third := join(t, base, "origin.example", key, "channel", "onair", "third")
+	reconnected := upstream(t, opened)
 	reconnected.ack(t)
-	expectAck(t, second, "second")
 	expectAck(t, third, "third")
+	fourth := join(t, base, "origin.example", key, "channel", "onair", "fourth")
+	expectAck(t, fourth, "fourth")
+	// Simulate the old renderer completing a response after rejoin.
+	_ = second.WriteJSON(map[string]string{"action": "call_res", "trxId": "once", "value": "old"})
 	fresh := []byte("{\"action\":\"call\",\"data\":[43]}")
 	if err := reconnected.conn.WriteMessage(websocket.TextMessage, fresh); err != nil {
 		t.Fatal(err)
 	}
-	for _, c := range []*websocket.Conn{second, third} {
+	for _, c := range []*websocket.Conn{third, fourth} {
 		if kind, got := receive(t, c); kind != websocket.TextMessage || string(got) != string(fresh) {
 			t.Fatal("stale state crosses reconnect")
 		}
 	}
-	if err := second.WriteJSON(map[string]string{"action": "call_res", "trxId": "once"}); err != nil {
+	if err := third.WriteJSON(map[string]string{"action": "call_res", "trxId": "once", "value": "new"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, body := receive(t, reconnected.conn); scalar(parse(body).TrxID) != "once" {
-		t.Fatal("dedup carried across generations")
+	if _, body := receive(t, reconnected.conn); scalar(parse(body).TrxID) != "once" || !strings.Contains(string(body), `"value":"new"`) {
+		t.Fatalf("new response lost or an old response crossed generations: %s", body)
 	}
 	data, _ := json.Marshal(s.Snapshot())
 	if strings.Contains(string(data), key) {
 		t.Fatal("token leaked to status")
 	}
-	second.Close()
 	third.Close()
+	fourth.Close()
 	eventually(t, func() bool {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		return len(s.hubs) == 0 && len(s.clients) == 0 && s.retainedQueue == 0
 	})
+}
+
+func TestUnacknowledgedClientCanWaitForUpstreamRetry(t *testing.T) {
+	config := DefaultConfig()
+	config.ReconnectMin, config.ReconnectMax = 20*time.Millisecond, 100*time.Millisecond
+	s, base, opened, count := fixture(t, config)
+	client := join(t, base, "origin.example", "synthetic-retry-token", "channel", "onair", "initial")
+	failed := upstream(t, opened)
+	failed.conn.Close()
+	retried := upstream(t, opened)
+	retried.ack(t)
+	expectAck(t, client, "initial")
+	if snapshot := s.Snapshot(); count.Load() != 2 || snapshot.UpstreamConnections != 1 || snapshot.Reconnects != 1 {
+		t.Fatalf("unexpected retry state: %+v", snapshot)
+	}
 }
 
 func TestIdentityAndOversize(t *testing.T) {
