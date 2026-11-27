@@ -101,7 +101,7 @@ func (s *Server) runGeneration(h *hub, conn *websocket.Conn) bool {
 	s.mu.Lock()
 	ok := s.push(&up.queue, h.canonical)
 	s.mu.Unlock()
-	if !ok {
+	if ok != pushed {
 		return false
 	}
 	deadline := time.Now().Add(s.config.JoinTimeout)
@@ -174,15 +174,19 @@ func (s *Server) fromUpstream(h *hub, p packet) bool {
 			}
 		}
 		return true
-	case "call":
-		// V1 treats a call as the complete renderer state. Keep only this
-		// generation's latest call, in its original text or binary format.
-		h.last = p
 	}
+	p.shared = &sharedPayload{bytes: len(p.body)}
 	if len(h.clients) >= 8 {
-		// The live clients share the same wire-format payload. Preparing one
-		// frame avoids repeating framing work for each socket.
+		// The downstream sockets are uncompressed. Charge the shared wire
+		// frame as well as the payload, with room for the framing buffer.
 		p.prepared, _ = websocket.NewPreparedMessage(p.kind, p.body)
+		if p.prepared != nil {
+			p.shared.bytes += max(64, 2*(len(p.body)+14))
+		}
+	}
+	if m.Action == "call" {
+		// Keep the generation's latest complete state, retaining its frame type.
+		h.last = p
 	}
 	for c := range h.clients {
 		if c.synchronized {
@@ -229,7 +233,7 @@ func (s *Server) fromClient(h *hub, c *client, p packet) bool {
 			return true
 		}
 	}
-	if !s.push(&h.upstream.queue, p) {
+	if s.push(&h.upstream.queue, p) != pushed {
 		h.upstream.cancel()
 		return false
 	}

@@ -216,14 +216,19 @@ if [[ ! -f $state/admin-password.json ]]; then
         unset legacy_password
     fi
 fi
+check_local_admin=0
 if [[ ! -f $etc/admin-v2.env ]]; then
+    check_local_admin=1
     networks=
     if [[ -f $etc/admin.env ]]; then
         networks=$(sed -n 's/^OVERSEAS_ADMIN_ALLOWED_NETWORKS=//p' "$etc/admin.env")
     fi
     {
         printf 'OVERSEAS_ADMIN_HOST=127.0.0.1\n'
-        if [[ $networks =~ ^[0-9a-fA-F:./,[:space:]]+$ ]]; then printf 'OVERSEAS_ADMIN_ALLOWED_NETWORKS=%s\n' "$networks"; fi
+        # Preserve the V1 management ACL and admit the new loopback listener.
+        if [[ $networks =~ ^[0-9a-fA-F:./,[:space:]]+$ ]]; then
+            printf 'OVERSEAS_ADMIN_ALLOWED_NETWORKS=%s,127.0.0.1/32\n' "$networks"
+        fi
     } > "$workspace/env"
     install_atomic "$workspace/env" "$etc/admin-v2.env" 0600
 fi
@@ -260,6 +265,10 @@ done
 if command -v curl >/dev/null; then
     curl --noproxy '*' --fail --silent --show-error --retry 5 --retry-connrefused \
         --max-time 2 http://127.0.0.1:3001/healthz >/dev/null
+    if (( check_local_admin )); then
+        curl --noproxy '*' --fail --silent --show-error --retry 5 --retry-connrefused \
+            --max-time 2 http://127.0.0.1:23000/login >/dev/null
+    fi
 fi
 if [[ ! -e $history/original ]]; then mv -T -- "$snapshot" "$history/original"; fi
 printf 'V2 installed. Management defaults to http://127.0.0.1:23000.\n'

@@ -1,6 +1,7 @@
 package fanout
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -267,6 +268,74 @@ func TestIdentityAndOversize(t *testing.T) {
 		t.Fatalf("expected close 1009: %v", err)
 	}
 	eventually(t, func() bool { return s.Snapshot().ActiveHubs == len(groups)-1 })
+}
+
+func TestDefaultBudgetDeliversSharedLargeFrameToHealthyClients(t *testing.T) {
+	s, base, opened, count := fixture(t, DefaultConfig())
+	const clients = 300
+	peers := make([]*websocket.Conn, 0, clients)
+	first := join(t, base, "origin.example", "synthetic-token", "a", "onair", "1")
+	peers = append(peers, first)
+	origin := upstream(t, opened)
+	origin.ack(t)
+	expectAck(t, first, "1")
+	for i := 2; i <= clients; i++ {
+		trx := strconv.Itoa(i)
+		peer := join(t, base, "origin.example", "synthetic-token", "a", "onair", trx)
+		expectAck(t, peer, trx)
+		peers = append(peers, peer)
+	}
+
+	payload := bytes.Repeat([]byte{0x48}, 256<<10)
+	deliveries := make(chan bool, clients)
+	for _, peer := range peers {
+		go func() {
+			peer.SetReadDeadline(time.Now().Add(5 * time.Second))
+			kind, body, err := peer.ReadMessage()
+			deliveries <- err == nil && kind == websocket.BinaryMessage && bytes.Equal(body, payload)
+		}()
+	}
+	if err := origin.conn.WriteMessage(websocket.BinaryMessage, payload); err != nil {
+		t.Fatal(err)
+	}
+	received := 0
+	for range clients {
+		if <-deliveries {
+			received++
+		}
+	}
+	snapshot := s.Snapshot()
+	if received != clients || snapshot.QueueOverflows != 0 || snapshot.SlowDisconnects != 0 || count.Load() != 1 {
+		t.Fatalf("received %d/%d, queue overflows=%d, slow disconnects=%d, upstream connections=%d",
+			received, clients, snapshot.QueueOverflows, snapshot.SlowDisconnects, count.Load())
+	}
+}
+
+func TestSharedBudgetReleasesAfterLastWriter(t *testing.T) {
+	config := DefaultConfig()
+	config.TotalQueueBytes = 1024
+	s := &Server{config: config}
+	left, right := newQueue(), newQueue()
+	frame := packet{body: make([]byte, 1024), shared: &sharedPayload{bytes: 1024}}
+	other := packet{body: []byte{1}}
+	if s.push(&left, frame) != pushed || s.push(&right, frame) != pushed {
+		t.Fatal("second reference consumed additional global budget")
+	}
+	if left.bytes != 1024 || right.bytes != 1024 || s.push(&right, other) != budgetFull {
+		t.Fatal("per-peer usage or global limit is incorrect")
+	}
+	writing, ok := s.pop(&left)
+	if !ok {
+		t.Fatal("missing in-progress frame")
+	}
+	s.clearQueue(&right)
+	if s.push(&right, other) != budgetFull {
+		t.Fatal("global budget was released before the last write completed")
+	}
+	s.release(&left, writing)
+	if s.retainedQueue != 0 || left.bytes != 0 || right.bytes != 0 || s.push(&right, other) != pushed {
+		t.Fatal("global budget was not reusable after write completion")
+	}
 }
 
 func TestSlowClientIsolated(t *testing.T) {

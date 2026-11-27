@@ -5,7 +5,7 @@ Use a disposable Ubuntu 24.04 or 26.04 host to verify the release first. An oper
 1. Install the Ubuntu Nginx and ca-certificates packages. Renderer cookie rewriting requires Nginx 1.19.3 or newer (the stock Ubuntu 22.04 Nginx 1.18 lacks this directive). Ensure systemd is running.
 2. Copy the tarball for Linux amd64 or arm64 and `SHA256SUMS`. Verify it with `sha256sum -c --ignore-missing SHA256SUMS`.
 3. Unpack and run `sudo bash scripts/install-admin.sh` from the package directory. For a fresh host supply a password at the terminal prompt. Operations retain the original V1 settings, legacy runtime files, cache directory and password record.
-4. Forward Admin through SSH for the default local binding, or configure the Admin environment file. Confirm uptime, TLS, read-only diagnostics and Nginx state before changing renderer settings.
+4. Forward Admin through SSH for the default local binding, or configure the Admin environment file. On V1 upgrades the generated ACL preserves the management networks and adds `127.0.0.1/32` for the loopback listener. Confirm uptime, TLS, read-only diagnostics and Nginx state before changing renderer settings.
 
 | File | Purpose |
 |---|---|

@@ -57,11 +57,27 @@ type Server struct {
 
 type packet struct {
 	prepared *websocket.PreparedMessage
+	shared   *sharedPayload
 	kind     int
 	body     []byte
 	ack      bool
 	received time.Time
 }
+
+// sharedPayload accounts for one immutable upstream frame retained by one
+// or more queues, including writes in progress. The server lock guards refs.
+type sharedPayload struct {
+	bytes int
+	refs  int
+}
+
+type pushResult uint8
+
+const (
+	pushed pushResult = iota
+	queueFull
+	budgetFull
+)
 
 type queue struct {
 	wake    chan struct{}
@@ -362,33 +378,65 @@ func (s *Server) read(conn *websocket.Conn, deadline time.Time, limit int) (pack
 	return packet{kind: kind, body: body, received: time.Now()}, nil
 }
 
-func (s *Server) push(q *queue, p packet) bool {
-	if len(q.packets) >= s.config.MaxMessages || q.bytes+len(p.body) > s.config.QueueBytes ||
-		s.retainedQueue+len(p.body) > s.config.TotalQueueBytes {
+func (s *Server) push(q *queue, p packet) pushResult {
+	if len(q.packets) >= s.config.MaxMessages || q.bytes+len(p.body) > s.config.QueueBytes {
 		s.counters.queueOverflow++
-		return false
+		return queueFull
+	}
+	additional := len(p.body)
+	if p.shared != nil {
+		additional = 0
+		if p.shared.refs == 0 {
+			additional = p.shared.bytes
+		}
+	}
+	if s.retainedQueue+additional > s.config.TotalQueueBytes {
+		s.counters.queueOverflow++
+		return budgetFull
+	}
+	if p.shared != nil {
+		p.shared.refs++
 	}
 	q.packets = append(q.packets, p)
 	q.bytes += len(p.body)
-	s.retainedQueue += len(p.body)
+	s.retainedQueue += additional
 	select {
 	case q.wake <- struct{}{}:
 	default:
 	}
-	return true
+	return pushed
+}
+
+// release drops one queue reference. A popped packet remains charged until
+// its write finishes, and clearing a queue only releases waiting packets.
+func (s *Server) release(q *queue, p packet) {
+	q.bytes -= len(p.body)
+	if p.shared == nil {
+		s.retainedQueue -= len(p.body)
+		return
+	}
+	p.shared.refs--
+	if p.shared.refs == 0 {
+		s.retainedQueue -= p.shared.bytes
+	}
 }
 
 func (s *Server) clearQueue(q *queue) {
 	for _, p := range q.packets {
-		q.bytes -= len(p.body)
-		s.retainedQueue -= len(p.body)
+		s.release(q, p)
 	}
 	q.packets = nil
 }
 
 func (s *Server) downstream(c *client, p packet) {
-	if c.ctx.Err() == nil && !s.push(&c.queue, p) {
-		s.counters.slowDisconnects++
+	if c.ctx.Err() != nil {
+		return
+	}
+	result := s.push(&c.queue, p)
+	if result != pushed {
+		if result == queueFull {
+			s.counters.slowDisconnects++
+		}
 		s.disconnect(c)
 	}
 }
@@ -435,8 +483,7 @@ func (s *Server) writeLoop(ctx context.Context, conn *websocket.Conn, q *queue, 
 					err = conn.WriteMessage(p.kind, p.body)
 				}
 				s.mu.Lock()
-				q.bytes -= len(p.body)
-				s.retainedQueue -= len(p.body)
+				s.release(q, p)
 				if c != nil && err == nil {
 					s.counters.downMessages++
 					s.counters.downBytes += uint64(len(p.body))

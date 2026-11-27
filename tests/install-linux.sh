@@ -45,9 +45,10 @@ initialize() {
     printf '%s' "$1" | sudo "$package/bin/overseas-admin" --init-password-file /etc/nginx/overseas-cache/admin-password.json
 }
 login() {
-    local value=$1
-    curl_local -c "$tmp/cookies" -H "Origin: http://$admin" -H 'Content-Type: application/json' \
-        --data "{\"username\":\"admin\",\"password\":\"$value\"}" "http://$admin/api/login" >/dev/null
+    local value=$1 destination=${2:-$admin}
+    curl_local --interface "${destination%:*}" -c "$tmp/cookies" \
+        -H "Origin: http://$destination" -H 'Content-Type: application/json' \
+        --data "{\"username\":\"admin\",\"password\":\"$value\"}" "http://$destination/api/login" >/dev/null
 }
 check_services() {
     for service in overseas-cache-admin.service ws-fanout.service nginx.service; do
@@ -134,6 +135,15 @@ echo 'Repeat install, real config apply, restarts and uninstall passed'
 git archive 0e2bb77bdacc4e1f825858a0d59e2070828dd1b7 | tar -xf - -C "$tmp"
 initialize "$legacy_password"
 sudo bash "$tmp/scripts/install-admin.sh"
+# Start with a V1 management VLAN that deliberately excludes localhost.
+management_ip=192.0.2.27
+legacy_admin=$management_ip:23000
+sudo ip addr add "$management_ip/32" dev lo
+printf '%s\n' 'OVERSEAS_ADMIN_ALLOWED_NETWORKS=192.0.2.0/24' | \
+    sudo tee /etc/nginx/overseas-cache/admin.env >/dev/null
+sudo systemctl restart overseas-cache-admin.service
+curl_local --interface "$management_ip" --retry 8 --retry-connrefused --retry-delay 1 "http://$legacy_admin/login" >/dev/null
+login "$legacy_password" "$legacy_admin"
 # Preserve a non-default password, domain data, token and cache file across upgrade.
 sudo sed -i -e 's/pgs26_p/legacy_channel/' -e 's/REPLACE_WITH_REAL_TOKEN/synthetic-legacy-token/' /etc/nginx/overseas-cache/settings.conf
 sudo systemctl reload nginx
@@ -145,6 +155,8 @@ sudo mv /var/lib/overseas-cache-installer/original /var/lib/overseas-cache-insta
 install
 check_services
 login "$legacy_password"
+sudo grep -Fxq 'OVERSEAS_ADMIN_ALLOWED_NETWORKS=192.0.2.0/24,127.0.0.1/32' /etc/nginx/overseas-cache/admin-v2.env
+echo 'V1 management VLAN migration preserves local Admin login'
 sudo cmp /etc/nginx/overseas-cache/settings.conf "$tmp/old-settings"
 sudo test -f /var/cache/nginx/web_cache/fixture-sentinel
 # Inject malformed Nginx site config into a throwaway copy of the archive.
@@ -156,8 +168,8 @@ sudo nginx -t -q
 login "$legacy_password"
 install rollback
 systemctl is-active --quiet overseas-cache-admin.service
-curl_local --retry 8 --retry-connrefused --retry-delay 1 "http://$admin/login" >/dev/null
-login "$legacy_password"
+curl_local --interface "$management_ip" --retry 8 --retry-connrefused --retry-delay 1 "http://$legacy_admin/login" >/dev/null
+login "$legacy_password" "$legacy_admin"
 sudo cmp /etc/nginx/overseas-cache/settings.conf "$tmp/old-settings"
 sudo test -f /var/cache/nginx/web_cache/fixture-sentinel
 echo 'V1 upgrade, injected install failure, and V2-to-V1 rollback passed'
