@@ -1,0 +1,56 @@
+name: Isolated Fanout hour soak
+on:
+  push:
+    branches: ['codex/isolated-soak-8eaeb2aa']
+permissions:
+  contents: read
+jobs:
+  fanout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 145
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {id: 30c-1g-2h, clients: 30, groups: 1, seconds: 7200}
+          - {id: 100c-5g-1h, clients: 100, groups: 5, seconds: 3600}
+          - {id: 300c-5g-1h, clients: 300, groups: 5, seconds: 3600}
+    env:
+      SOAK_MAIN: '8eaeb2aa8d8b6552fc5abe7aaf04581678814a88'
+      SOAK_TREE: '23e87b4542caf050dfd2fe4dc64049485983bf89'
+      SOAK_CLIENTS: ${{ matrix.clients }}
+      SOAK_GROUPS: ${{ matrix.groups }}
+      SOAK_SECONDS: ${{ matrix.seconds }}
+      SOAK_SAMPLE_SECONDS: '10'
+      SOAK_EVENT_SECONDS: '300'
+      SOAK_OUTPUT: artifacts/${{ matrix.id }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.4'
+      - name: Bind the instrumented test to the exact main baseline
+        run: |
+          test "$(git rev-parse HEAD^)" = "$SOAK_MAIN"
+          test "$(git rev-parse "$SOAK_MAIN^{tree}")" = "$SOAK_TREE"
+          git diff --exit-code "$SOAK_MAIN" -- go.mod go.sum internal ':!internal/fanout/soak_*_test.go'
+          mkdir -p "$SOAK_OUTPUT"
+          git rev-parse HEAD > "$SOAK_OUTPUT/harness-commit"
+          go version > "$SOAK_OUTPUT/runtime"
+          go list -m all > "$SOAK_OUTPUT/modules"
+          uname -srm > "$SOAK_OUTPUT/os"
+          getconf CLK_TCK > "$SOAK_OUTPUT/clock-ticks"
+          test "$(cat "$SOAK_OUTPUT/clock-ticks")" = 100
+      - name: Run the full-duration loopback matrix scenario
+        run: |
+          set -o pipefail
+          go test -mod=readonly -count=1 -v -run '^TestIsolatedHourlySoak$' -timeout 2h10m ./internal/fanout | tee "$SOAK_OUTPUT/driver.log"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: isolated-soak-${{ matrix.id }}
+          path: ${{ env.SOAK_OUTPUT }}
+          if-no-files-found: error
