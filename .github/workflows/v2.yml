@@ -85,6 +85,11 @@ jobs:
           node-version: '24'
       - run: bash scripts/build-release.sh
       - run: (cd dist && sha256sum --check SHA256SUMS)
+      - name: Rebuild and compare release checksums
+        run: |
+          cp dist/SHA256SUMS "$RUNNER_TEMP/first-SHA256SUMS"
+          bash scripts/build-release.sh
+          cmp "$RUNNER_TEMP/first-SHA256SUMS" dist/SHA256SUMS
       - uses: actions/upload-artifact@v6
         with:
           name: linux-release

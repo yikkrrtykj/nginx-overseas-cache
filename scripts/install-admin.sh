@@ -141,7 +141,8 @@ for account in overseas-admin overseas-fanout; do
     fi
 done
 install -d -m 0700 -o overseas-admin -g overseas-admin "$state"
-install -d -m 0755 "$app/bin" /var/log/overseas-cache /var/cache/nginx/web_cache
+install -d -m 0755 "$app/bin" /var/log/overseas-cache
+install -d -m 0750 -o www-data -g www-data /var/cache/nginx/web_cache
 if [[ ! -e /var/log/overseas-cache/traffic.log ]]; then
     install -m 0640 -o www-data -g overseas-admin /dev/null /var/log/overseas-cache/traffic.log
 fi

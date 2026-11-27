@@ -12,7 +12,14 @@ cleanup() {
     rm -rf -- "$tmp"
 }
 trap cleanup EXIT
-trap 'sudo journalctl -u nginx -u overseas-cache-config -u overseas-cache-admin --no-pager -n 50' ERR
+diagnostics() {
+    local at=$1
+    printf 'Installation fixture failed at line %s\n' "$at"
+    sudo journalctl -u nginx -u overseas-cache-config -u overseas-cache-admin --no-pager -n 50 || true
+    sudo journalctl -k --no-pager -n 20 --grep 'apparmor="DENIED"' || true
+    sudo tail -n 15 /var/log/overseas-cache/traffic.log || true
+}
+trap 'diagnostics "$LINENO"' ERR
 tar -xzf "$(find dist -maxdepth 1 -name '*-linux-amd64.tar.gz' -print -quit)" -C "$tmp"
 package=$(find "$tmp" -maxdepth 1 -type d -name 'nginx-overseas-cache-*' -print -quit)
 [[ -x $package/bin/overseas-admin ]]
@@ -49,7 +56,7 @@ check_services() {
     curl_local "http://$admin/healthz"
 }
 cache_status() {
-    curl_local -D - -o /dev/null "$@" | awk 'tolower($1)=="x-cache-status:" {gsub("\r","",$2); print $2}'
+    curl_local --write-out "\\nfixture cache request %{url_effective}: HTTP %{http_code}\\n" -D - -o /dev/null "$@" | awk 'tolower($1)=="x-cache-status:" {gsub("\r","",$2); print $2} /^fixture cache request/ { print > "/dev/stderr" }'
 }
 
 initialize "$password"
@@ -87,7 +94,20 @@ curl_local -b "$tmp/cookies" "http://$admin/api/v2/config" > "$tmp/config"
 nonce=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["csrfToken"])' < "$tmp/config")
 curl --noproxy '*' --fail-with-body --silent --show-error --max-time 75 -b "$tmp/cookies" -H "Origin: http://$admin" -H "X-CSRF-Token: $nonce" -H 'Content-Type: application/json' \
     --data '{"originHost":"origin-v2.example","cdnHost":"cdn-v2.example","channelId":"fixture","accountId":"render","token":"synthetic-installed-token"}' \
-    "http://$admin/api/v2/config" > "$tmp/saved" || { cat "$tmp/saved"; sudo journalctl -u overseas-cache-config --no-pager -n 30; exit 1; }
+    "http://$admin/api/v2/config" > "$tmp/saved" || {
+        python3 -c 'import json,sys; print(json.load(sys.stdin).get("message",""))' < "$tmp/saved" || true
+        diagnostics "$LINENO"
+        # This fixture uses only synthetic Nginx data. Reproduce validation
+        # under the installed helper's systemd restrictions for its stderr.
+        sudo systemctl stop overseas-cache-config.service
+        sudo mkdir -p /run/systemd/system/overseas-cache-config.service.d
+        printf '[Service]\nType=oneshot\nExecStart=\nExecStart=/usr/sbin/nginx -t\n' | \
+            sudo tee /run/systemd/system/overseas-cache-config.service.d/fixture-diagnostic.conf >/dev/null
+        sudo systemctl daemon-reload
+        sudo systemctl start overseas-cache-config.service || true
+        sudo journalctl -u overseas-cache-config --no-pager -n 30 || true
+        exit 1
+    }
 python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["ok"] and r["backup"] and r["config"]["tokenPresent"]; assert "token" not in r["config"]' < "$tmp/saved"
 sudo systemctl restart overseas-cache-admin.service ws-fanout.service
 check_services
