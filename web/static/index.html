@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Overseas Cache · 运维控制台</title>
+<link rel="stylesheet" href="/app.css">
+<script type="module" src="/assets/console.js"></script>
+</head>
+<body>
+<a class="skip" href="#main">跳到主内容</a>
+<div class="layout">
+  <aside class="rail">
+    <a class="brand" href="#overview"><svg width="24" height="24" aria-hidden="true"><use href="/assets/icons.svg#network"></use></svg><div>Overseas Cache<span>运维控制台</span></div></a>
+    <nav aria-label="控制台">
+      <a href="#overview" aria-current="location"><svg aria-hidden="true"><use href="/assets/icons.svg#activity"></use></svg>运行概览</a>
+      <a href="#connections"><svg aria-hidden="true"><use href="/assets/icons.svg#network"></use></svg>共享连接</a>
+      <a href="#traffic"><svg aria-hidden="true"><use href="/assets/icons.svg#database"></use></svg>缓存与流量</a>
+      <a href="#configuration"><svg aria-hidden="true"><use href="/assets/icons.svg#settings"></use></svg>上游配置</a>
+      <a href="#diagnostics"><svg aria-hidden="true"><use href="/assets/icons.svg#terminal"></use></svg>诊断</a>
+    </nav>
+    <div class="rail-footer"><button id="password-open" class="quiet" type="button">修改密码</button><button id="logout" class="quiet" type="button">退出登录</button></div>
+  </aside>
+  <main id="main">
+    <header class="top" id="overview">
+      <div><h1>运行概览</h1><p>WebSocket 共享连接与 Nginx 缓存</p></div>
+      <div class="top-actions"><span id="status-badge" class="status" data-tone="loading">读取中</span><button id="refresh" type="button" class="quiet" aria-label="刷新运行数据"><svg aria-hidden="true"><use href="/assets/icons.svg#refresh"></use></svg>刷新</button></div>
+    </header>
+    <div class="dashboard">
+      <section aria-label="连接指标" class="metrics" id="metrics" aria-busy="true">
+        <div><span>内网客户端</span><strong id="local-clients">—</strong><small>本机 Fanout</small></div>
+        <div><span>海外连接</span><strong id="upstream-connections">—</strong><small>实际 WebSocket</small></div>
+        <div><span>活跃共享组</span><strong id="active-groups">—</strong><small>按来源与身份隔离</small></div>
+        <div><span>已确认握手</span><strong id="acknowledged">—</strong><small>已发送 join_res</small></div>
+        <div><span>减少的连接</span><strong id="saved">—</strong><small>较每客户端直连估算</small></div>
+      </section>
+      <section id="connections" class="panel" aria-labelledby="connections-title">
+        <div class="section-head"><div><h2 id="connections-title">共享连接</h2><p id="connections-description">正在读取 Fanout 状态</p></div><time class="mono" id="status-time">—</time></div>
+        <div class="table-wrap" tabindex="0" aria-label="共享组列表">
+          <table>
+            <thead><tr><th scope="col">来源 / 频道</th><th scope="col">模式</th><th scope="col">上游状态</th><th scope="col" class="num">已握手 / 客户端</th><th scope="col" class="num">队列</th><th scope="col" class="num">重连</th></tr></thead>
+            <tbody id="groups"><tr><td colspan="6" class="empty">正在读取连接数据…</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+      <div class="split">
+        <section id="traffic" class="panel" aria-labelledby="traffic-title">
+          <div class="section-head"><div><h2 id="traffic-title">缓存与流量</h2><p>Nginx 访问日志 · 最新日志样本</p></div><span class="status" id="traffic-state" data-tone="loading">读取中</span></div>
+          <div class="compact-metrics">
+            <div><span>命中率</span><strong id="hit-rate">—</strong></div><div><span>响应量</span><strong id="response-bytes">—</strong></div><div><span>上游请求</span><strong id="origin-requests">—</strong></div>
+          </div>
+          <div class="chart" id="upstream-trend" role="group" aria-label="上游请求趋势，最近约三十分钟，每格五分钟" hidden></div>
+          <div id="cache-counts" class="data-list"><p class="empty">正在读取访问日志…</p></div>
+        </section>
+        <section id="diagnostics" class="panel" aria-labelledby="diagnostics-title">
+          <div class="section-head"><div><h2 id="diagnostics-title">诊断</h2><p>运行状态与近期异常</p></div></div>
+          <dl class="data-list">
+            <div><dt>Admin API</dt><dd id="diag-admin">等待响应</dd></div>
+            <div><dt>Nginx 流量证据</dt><dd id="diag-nginx">—</dd></div>
+            <div><dt>Fanout 运行时间</dt><dd id="uptime">—</dd></div>
+            <div><dt>上游重连</dt><dd id="reconnects">—</dd></div>
+            <div><dt>慢客户端断开</dt><dd id="slow-clients">—</dd></div>
+            <div><dt>发送队列溢出</dt><dd id="overflows">—</dd></div>
+            <div><dt>Go 协程</dt><dd id="goroutines">—</dd></div>
+          </dl>
+        </section>
+      </div>
+      <section id="configuration" class="panel" aria-labelledby="config-title">
+        <div class="section-head"><div><h2 id="config-title">上游配置</h2><p>更新主站、CDN 与渲染参数</p></div><span class="status" id="config-state" data-tone="loading">读取中</span></div>
+        <div class="config-grid">
+          <form id="config-form">
+            <label>主站域名<input id="origin" name="originHost" required maxlength="253" spellcheck="false" autocapitalize="off"></label>
+            <label>CDN 域名<input id="cdn" name="cdnHost" required maxlength="253" spellcheck="false" autocapitalize="off"></label>
+            <div class="form-row">
+              <label>频道 ID<input id="channel" name="channelId" required maxlength="128" spellcheck="false"></label>
+              <label>账户 ID<input id="account" name="accountId" required maxlength="128" spellcheck="false"></label>
+            </div>
+            <label>Token<input id="render-token" name="token" type="password" autocomplete="new-password" maxlength="512" aria-describedby="token-hint"></label>
+            <small id="token-hint">留空保留已配置的 Token</small>
+            <div class="form-actions"><button class="primary" id="save" disabled type="submit">核对并应用</button></div>
+          </form>
+          <div class="discovery">
+            <form id="discover-form">
+              <h3>网页识别</h3>
+              <label>原始网页地址<input id="source" type="password" autocomplete="off" required maxlength="4096" placeholder="https://"></label>
+              <label>F12 资源地址（可选）<input id="evidence" type="password" autocomplete="off" maxlength="4096" placeholder="https://"></label>
+              <button class="quiet" id="discover" type="submit">识别网页</button>
+            </form>
+            <div id="discovery-result" aria-live="polite"></div>
+          </div>
+        </div>
+        <div id="operation" class="notice" role="status" hidden></div>
+        <form id="rollback-form" class="rollback">
+          <label>备份标识<input id="backup" maxlength="120" autocomplete="off" spellcheck="false" placeholder="admin-YYYYMMDDTHHMMSSZ-…"></label>
+          <button type="submit" class="quiet">核对并恢复</button>
+        </form>
+      </section>
+    </div>
+  </main>
+</div>
+<dialog id="confirm" aria-labelledby="confirm-title"><form method="dialog">
+  <h2 id="confirm-title">确认变更</h2><div id="diff" class="data-list"></div>
+  <div class="form-actions"><button class="quiet" value="cancel" autofocus>取消</button><button class="primary" value="confirm">确认应用</button></div>
+</form></dialog>
+<dialog id="password-dialog" aria-labelledby="password-title">
+  <form id="password-form">
+    <h2 id="password-title">修改密码</h2>
+    <label>当前密码<input id="current-password" type="password" autocomplete="current-password" required></label>
+    <label>新密码<input id="new-password" type="password" autocomplete="new-password" required minlength="12" maxlength="256"></label>
+    <p class="notice" id="password-error" role="alert" hidden></p>
+    <div class="form-actions"><button class="quiet" id="password-cancel" type="button">取消</button><button class="primary" type="submit">保存密码</button></div>
+  </form>
+</dialog>
+<dialog id="inspector" aria-labelledby="inspector-title"><form method="dialog">
+  <h2 id="inspector-title">连接详情</h2><dl id="group-details" class="data-list"></dl>
+  <div class="form-actions"><button class="quiet">关闭</button></div>
+</form></dialog>
+</body>
+</html>

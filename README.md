@@ -1,279 +1,38 @@
 # Nginx Overseas Web Cache
 
-用一台可访问海外源站的 Ubuntu 服务器，为内网电脑提供固定的 HTTP 入口：
+在 Ubuntu 上为可信内网提供渲染页面入口。Nginx 处理 HTTPS 源站转发、静态资源缓存与域名改写，Go Fanout 按来源、Token、频道和渲染模式共享 WebSocket，Go Admin 提供管理控制台。
 
-```text
-内网浏览器 -> http://SERVER_IP:23333 -> Ubuntu Nginx -> 海外网页/CDN
-                                           └-> 本地 ws-fanout -> 1 条共享海外 WebSocket
+| 入口 | 默认绑定 | 用途 |
+|---|---|---|
+| Renderer | TCP 23333，按 Nginx 内网网段规则访问 | 实时页面、API、静态缓存和 WebSocket |
+| Admin | `127.0.0.1:23000` | 连接、缓存、配置、识别和诊断 |
+| Fanout | `127.0.0.1:3001` | Nginx 内部路由、状态文件、本机指标 |
+| Nginx health | `127.0.0.1:23334` | 本机进程可达性 |
+| Config helper | `/run/overseas-cache-config.sock` | 配置应用与回滚 |
+
+## 部署
+
+在隔离主机验证后，复制对应 Linux 架构的构建包，校验 `SHA256SUMS`，从解包目录运行 `sudo bash scripts/install-admin.sh`。安装前需要 Ubuntu Nginx 和 systemd。全新安装从终端读取自定义管理密码。现有安装会继续使用原有的 PBKDF2 密码记录、源站、CDN 和渲染参数。
+
+使用 [安装、升级及回滚说明](docs/DEPLOYMENT.md) 配置 Admin 绑定地址和 TLS。渲染端仍运行兼容的内网 HTTP，链接可能携带 Token，应保持在受控局域网。管理操作迁移到单独的配置服务，控制台可恢复备份中的渲染字段。
+
+## 本地开发
+
+```sh
+npm --prefix web ci --ignore-scripts
+npm --prefix web run build
+go test ./...
+go vet ./...
+python -m pip install -r ws-fanout/requirements.txt
+python -m unittest discover -s tests -v
+node --test tests/test_admin_ui.cjs
 ```
 
-项目针对以下场景设计：
-
-- 内网客户端不安装 VPN 或系统代理；
-- 页面和 API 保持实时、不缓存，WebSocket 实时消息由本地 fanout 共享；
-- 图片、字体和带版本号的 JavaScript 由 Nginx 缓存；
-- 浏览器始终停留在内网 IP，不会跳回海外域名；
-- token 单独保存在服务器上，不进入 Git 仓库。
-
-> 本项目示例只适用于你有权访问和代理的站点。不要把带 token 的 HTTP 服务暴露到公网。
-
-## 文件说明
-
-```text
-nginx/
-├── conf.d/
-│   └── proxy-cache.conf
-├── settings.conf.example
-└── sites-available/
-    └── overseas-cache
-ws-fanout/
-├── requirements.txt
-└── ws_fanout.py
-systemd/
-└── ws-fanout.service
-```
-
-## 安装
-
-Ubuntu 安装 Nginx：
-
-```bash
-sudo apt update
-sudo apt install -y nginx
-```
-
-推荐直接安装完整管理面板和 WebSocket fanout：
-
-```bash
-git clone https://github.com/yikkrrtykj/nginx-overseas-cache.git
-cd nginx-overseas-cache
-sudo bash scripts/install-admin.sh
-```
-
-该命令会自动部署 Nginx 配置、管理页面、Python 虚拟环境和
-`ws-fanout.service`。现有服务器再次运行也会保留当前域名、API 参数及管理密码。
-如果是全新服务器，安装后进入管理页面填写真实域名、channel、account 和 token。
-
-如果不使用完整安装程序，也可以手动复制配置：
-
-```bash
-sudo cp nginx/conf.d/proxy-cache.conf /etc/nginx/conf.d/proxy-cache.conf
-sudo cp nginx/sites-available/overseas-cache /etc/nginx/sites-available/overseas-cache
-sudo mkdir -p /etc/nginx/overseas-cache
-sudo cp nginx/settings.conf.example /etc/nginx/overseas-cache/settings.conf
-sudo bash scripts/install-ws-fanout.sh
-```
-
-编辑服务器本地设置：
-
-```bash
-sudo nano /etc/nginx/overseas-cache/settings.conf
-```
-
-把 `REPLACE_WITH_REAL_TOKEN` 改成真实 token。该文件不要提交到 Git。
-
-启用站点：
-
-```bash
-sudo ln -sfn /etc/nginx/sites-available/overseas-cache /etc/nginx/sites-enabled/overseas-cache
-sudo nginx -t
-sudo systemctl reload nginx
-```
-
-访问：
-
-```text
-http://SERVER_IP:23333/
-```
-
-## 修改 API 参数
-
-当 channel、account 或 token 变化时，只编辑：
-
-```text
-/etc/nginx/overseas-cache/settings.conf
-```
-
-然后检查并重新加载：
-
-```bash
-sudo nginx -t
-sudo systemctl reload nginx
-```
-
-fanout 不把 token 写死在服务文件中。浏览器刷新后，新 token 会自动创建新的共享连接组，
-无需修改或重启 `ws-fanout.service`。
-
-## 更换上游域名
-
-### 使用管理页面（推荐）
-
-仓库包含一个可由可信内网直接访问的管理面板。它可以填写：
-
-- 主站域名；
-- 静态 CDN 域名；
-- `channelId`；
-- `accountId`；
-- 新 token（留空则保持原 token）。
-
-在 Ubuntu 的仓库目录中安装：
-
-```bash
-git pull
-sudo bash scripts/install-admin.sh
-```
-
-安装程序会备份并部署仓库中的最新 Nginx 配置。如果当前 channel/account/token 仍直接写在旧的站点配置中，安装程序会尝试自动迁移到权限为 `0600` 的 `settings.conf`。
-
-全新安装的默认管理账号为 `admin`，默认密码为 `global123!@#`。管理服务监听 `23000` 端口，但程序只接受私有内网网段，并且仍然要求用户名和密码。内网电脑直接访问：
-
-```text
-http://192.168.16.23:23000
-```
-
-浏览器会显示专用登录页面。如果从旧版升级，原来的用户名和密码会自动保留，不会被默认密码覆盖。登录后点击右上角“修改密码”，输入当前密码和至少 12 位的新密码即可。修改成功会让所有浏览器退出登录，随后使用新密码重新进入。建议首次登录后立即修改默认密码。
-
-密码使用 PBKDF2 哈希保存在权限为 `0600` 的 `/etc/nginx/overseas-cache/admin-password.json` 中，不能从服务器反向查看明文。管理页不会读取并显示原 token；token 输入框留空时会保持服务器上的当前值。每次保存都会自动备份、执行 `nginx -t` 并重新加载，失败会恢复旧配置。
-
-### 智能识别新网页
-
-管理页下方的“识别新网页”可以直接粘贴原始网页完整地址。Ubuntu 会从海外网络加载该页面及少量同站脚本和样式，自动提取：
-
-- 主站域名；
-- `channelId`、`accountId` 和 `token`；
-- 页面引用的字体、图片、样式和脚本域名；
-- 推荐的静态 CDN 域名及资源类型验证结果。
-
-如果网站把 CDN 地址放在运行后才生成的 JavaScript 请求里，普通页面扫描可能无法看见。这时在浏览器按 `F12`，打开“网络”，选中任意一个状态为 `200` 的字体、图片、CSS 或 JS 请求，复制完整“请求 URL”，粘贴到管理页的“F12 资源请求地址”后重新识别即可。管理页会提取域名并由 Ubuntu 再验证一次。
-
-识别成功后会自动填入上方表单，包括新的 `channelId`、`accountId` 和 `token`，结果区也会显示识别到的频道、账户和 token 是否完整。只有执行“保存并应用”后服务器才会生效；保存确认框会显示频道、账户的前后变化。识别时会读取 HTTPS 跳转后的地址，并支持地址里的 `&amp;` 分隔符。
-
-未识别到的字段会清空并要求补填，避免继续使用旧频道参数。识别新网页后 token 必须填写，不能留空沿用旧值；普通手动修改仍可留空保留原 token。更换输入地址后需要重新识别。
-
-当前 Nginx 模板主要适配 `/render`、`/templates/` 和 `/templates-auth/` 路径。如果候选资源显示“路径待适配”，说明域名可以识别，但新网站的路径结构与本项目不同，仍需调整 Nginx `location` 规则。保存频道参数后，客户端要刷新内网根地址 `/` 才会进入新频道；已经打开的旧 `/render?...` 地址不会自动改写。
-
-为避免识别接口访问内网设备，服务器只允许扫描标准 HTTPS 公网域名，拒绝 IP 地址、私有地址、回环地址和保留地址，并限制跳转、请求数量和下载大小。
-
-忘记密码时，可以在服务器仓库目录重新设置，下面示例会设置为 `你的新密码`：
-
-```bash
-read -rsp '请输入新密码: ' OVERSEAS_NEW_PASSWORD; echo
-printf '%s' "$OVERSEAS_NEW_PASSWORD" | sudo python3 admin/server.py \
-  --init-password-file /etc/nginx/overseas-cache/admin-password.json \
-  --username admin
-unset OVERSEAS_NEW_PASSWORD
-sudo systemctl restart overseas-cache-admin
-```
-
-新密码需要至少 12 位。输入内容不会显示，也不会把密码本身写进 shell 历史记录。
-
-管理面板的服务状态和日志：
-
-```bash
-sudo systemctl status overseas-cache-admin
-sudo journalctl -u overseas-cache-admin -n 100 --no-pager
-```
-
-默认允许的管理网段为 `192.168.0.0/16`、`10.0.0.0/8`、`172.16.0.0/12` 和本机回环。需要收紧范围时，编辑 `/etc/nginx/overseas-cache/admin.env` 中的 `OVERSEAS_ADMIN_ALLOWED_NETWORKS`，多个网段使用英文逗号分隔，然后执行 `sudo systemctl restart overseas-cache-admin`。
-
-> 管理页使用 HTTP，登录密码和新 token 在内网传输时不加密。它只适用于可信局域网，绝不能在路由器上映射或向公网开放 TCP 23000。
-
-### 使用命令行脚本
-
-主站域名变化时，不要在多个配置文件里手工查找替换。先把仓库中的脚本放到服务器，例如仓库已经克隆到 `/opt/nginx-overseas-cache`：
-
-```bash
-cd /opt/nginx-overseas-cache
-sudo bash scripts/change-upstreams.sh 新的主站域名
-```
-
-如果主站和静态 CDN 域名都变了：
-
-```bash
-sudo bash scripts/change-upstreams.sh 新的主站域名 新的CDN域名
-```
-
-示例：
-
-```bash
-sudo bash scripts/change-upstreams.sh api.example.com cdn.example.com
-```
-
-只填域名，不要带 `https://`、端口、路径或结尾斜杠。脚本会：
-
-1. 从现有 Nginx 配置识别旧域名；
-2. 备份两个配置文件；
-3. 更新统一的主站/CDN 变量和上游地址，Host、TLS SNI、跳转、Cookie、HTML/JS 地址及缓存键会自动引用新值；
-4. WebSocket fanout 会由 Nginx 自动使用新的主站域名；
-5. 执行 `nginx -t`；
-6. 验证成功后重新加载，失败则恢复备份。
-
-域名会参与静态缓存键，因此换域名后不会把旧站缓存误返回给新站。旧缓存会在 `inactive=7d` 到期后由 Nginx 自动清理。
-
-如果只是页面 URL 中的 `channelId`、`accountId` 或 `token` 变化，仍然只修改：
-
-```text
-/etc/nginx/overseas-cache/settings.conf
-```
-
-如果新的地址不仅换了域名，还改变了路径结构（例如 `/render`、`/templates/` 或 `/templates-auth/`），需要同步修改 `nginx/sites-available/overseas-cache` 中对应的 `location`，不能只运行换域名脚本。
-
-## 缓存与实时数据
-
-- `/templates/`：缓存图片、字体和模板资源；
-- `/templates-auth/.../static/js/*.js`：缓存带哈希版本的 JavaScript；
-- `/render`、其他页面和 API：不缓存；
-- `/ws`：不缓存，经本机 `127.0.0.1:3001` fanout 转发；相同主站、token、channel 和 mode 的内网浏览器只建立一条海外 WebSocket；
-- `101 Switching Protocols` 长期处于挂起状态是正常的实时连接；
-- `X-Cache-Status: HIT` 表示静态资源已由 Nginx 缓存返回。
-
-管理面板首页的“连接线路”每 3 秒自动刷新，直接显示：
-
-- 当前实际建立的海外 WebSocket 线路数；
-- 连接到本机 fanout 的内网浏览器数量及已完成握手数量；
-- 按主站、token、channel 和 mode 划分的共享组；
-- 相比每台电脑直连所减少的海外连接数量。
-
-这些数据由 fanout 写入 `/run/ws-fanout/status.json`，管理页只读取本机内存目录，不会为监控额外连接公网。状态中只包含不可逆的 token 短哈希，不包含真实 token。fanout 停止或状态超过 10 秒未更新时，页面会明确显示“状态不可用”，不会把旧数字当作实时数字。
-
-查看 WebSocket 共享状态：
-
-```bash
-sudo systemctl status ws-fanout --no-pager
-sudo journalctl -u ws-fanout -f
-```
-
-日志中的 `clients=N` 是同一共享组当前连接的内网浏览器数量；同组日志只应出现一次
-`upstream connected`。`token=` 后面是不可逆的短哈希，不是真实 token。
-
-专用访问日志位于：
-
-```text
-/var/log/nginx/overseas-cache.access.log
-```
-
-该日志只记录 `render`、`templates` 等请求类别，不记录具体路径、URL 查询参数或 Referer，避免把 channel token 写入普通访问日志。浏览器地址栏、历史记录及页面自身请求仍可能包含 token，因此 23333 端口必须只允许可信内网访问；Nginx 配置本身也会拒绝来自公共地址的连接。
-
-如果服务器使用过旧版配置，旧访问日志中可能已经存在 `/templates-auth/.../<token>/...` 路径。升级并确认新配置生效后，可以清空旧日志：
-
-```bash
-sudo truncate -s 0 /var/log/nginx/overseas-cache.access.log /var/log/nginx/overseas-cache.error.log
-```
-
-清除 Nginx 静态缓存时，应先确认路径准确，再执行：
-
-```bash
-sudo find /var/cache/nginx/web_cache -mindepth 1 -delete
-sudo systemctl reload nginx
-```
-
-## 防火墙建议
-
-只允许内网访问 23333 和管理端口 23000。以下示例允许整个 `192.168.0.0/16`，请按实际网段收紧：
-
-```bash
-sudo ufw allow from 192.168.0.0/16 to any port 23333 proto tcp
-sudo ufw allow from 192.168.0.0/16 to any port 23000 proto tcp
-```
-
-不要在公网路由器上转发 23333 或 23000，因为 URL、管理密码和 token 都是敏感信息。
+安装 Playwright Chromium 后运行 `npm --prefix web run browser`。四种视口和状态截图输出到 `artifacts/browser/`。运行 `bash scripts/build-release.sh` 生成 Linux amd64 / arm64 包及 SHA256 校验文件。
+
+- [架构及兼容矩阵](docs/ARCHITECTURE.md)
+- [HTTP 接口契约](docs/API.md)
+- [权限与安全边界](docs/SECURITY.md)
+- [界面规范](design.md)
+- [前端选型 ADR](docs/ADR-001.md)
+- [性能验证](docs/PERFORMANCE.md)
