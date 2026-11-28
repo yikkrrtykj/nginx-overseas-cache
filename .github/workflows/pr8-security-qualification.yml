@@ -12,7 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: 4d7bbe0084ab6adfa95d61d895e0ad57c4c4cfbe
+          ref: 01746cc861e1151fd8530ef0e8adb85fb5892525
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@v6
@@ -25,8 +25,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/pr8-security"
           evidence=$RUNNER_TEMP/pr8-security
           {
-            test "$(git rev-parse HEAD)" = '4d7bbe0084ab6adfa95d61d895e0ad57c4c4cfbe'
-            test "$(git rev-parse 'HEAD^{tree}')" = '978f23131ef79291cc2c983e70f554335b55b6bc'
+            test "$(git rev-parse HEAD)" = '01746cc861e1151fd8530ef0e8adb85fb5892525'
+            test "$(git rev-parse 'HEAD^{tree}')" = 'fda8ff30da6d79a2fe6c629a4c641cc507ed905f'
             git rev-parse HEAD 'HEAD^{tree}'
             bash --version | sed -n '1p'
             shellcheck --version
