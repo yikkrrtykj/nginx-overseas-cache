@@ -16,6 +16,7 @@ import (
 
 type Store struct {
 	UpstreamPath, SettingsPath, BackupRoot, LockPath string
+	InstallationJournalPath                         string
 	Validate, Reload                                 func(context.Context) error
 	ValidateHost                                     func(context.Context, string) error
 	mu                                               sync.Mutex
@@ -23,6 +24,7 @@ type Store struct {
 
 var ErrRecovered = errors.New("应用失败，已恢复原配置")
 var ErrRecoveryFailed = errors.New("应用失败且自动恢复未完成，请检查服务日志和备份")
+var ErrInstallationPending = errors.New("安装事务待恢复，配置服务暂不可用")
 var backupID = regexp.MustCompile("^(admin-|install-)?[0-9]{8}T[0-9]{6}Z([-_.][0-9A-Za-z_-]{1,96})?$")
 
 func readBounded(path string, limit int64) ([]byte, error) {
@@ -188,6 +190,13 @@ func (s *Store) lock(ctx context.Context, operation func() error) error {
 		return errors.New("配置锁不可用")
 	}
 	defer unlock()
+	// Install and configuration operations share LockPath. Check the journal
+	// while holding it, before reading or recovering managed configuration.
+	if s.InstallationJournalPath != "" {
+		if _, err := os.Lstat(s.InstallationJournalPath); !errors.Is(err, os.ErrNotExist) {
+			return ErrInstallationPending
+		}
+	}
 	if err := s.recover(); err != nil {
 		return ErrRecoveryFailed
 	}

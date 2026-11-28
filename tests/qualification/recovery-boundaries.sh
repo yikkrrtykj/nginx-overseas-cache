@@ -129,6 +129,13 @@ start_v1() {
     positive_v1
 }
 recover_v1() { op recover; start_v1; no_trial; }
+check_helper_response() {
+    local expected=$1
+    shift
+    runuser -u overseas-admin -- curl --noproxy '*' -fsS --max-time 8 \
+        --unix-socket /run/overseas-cache-config.sock "$@" http://localhost/config |
+        python3 -c 'import json,sys; assert json.load(sys.stdin).get("error", "") == sys.argv[1]' "$expected"
+}
 prepare_v1() {
     bash "$root/tests/qualification/boot-guest.sh" provision
     op install
@@ -157,6 +164,8 @@ for phase in pending files reload start; do
     if [[ $phase == start ]]; then
         systemctl is-active --quiet "$admin"
         [[ -s $active ]] || fail 'trial activation permit missing'
+        check_helper_response '安装事务待恢复，配置服务暂不可用'
+        p 'socket-activated helper rejects configuration access during interrupted trial'
     else
         printf '99999999 1\n' > "$active"
     fi
@@ -198,6 +207,41 @@ touch "$testdir/resume"
 wait "$installer"
 positive_v2
 p 'concurrent live installer blocked during staging, then activated without deadlock'
+
+check_helper_response ''
+helper_pid=$(systemctl show --value -p MainPID overseas-cache-config.service)
+[[ $helper_pid =~ ^[1-9][0-9]*$ ]]
+crash pending "$trial" install
+[[ -s $journal && $(systemctl show --value -p MainPID overseas-cache-config.service) == "$helper_pid" ]]
+check_helper_response '安装事务待恢复，配置服务暂不可用' \
+    --header 'Content-Type: application/json' \
+    --data '{"changes":{"originHost":"webcoder.atum.live","cdnHost":"webcodercdn.atum.live","channelId":"qualification-uncommitted","accountId":"fixture"}}'
+reject /opt/overseas-cache-v2/bin/config-helper --recover
+for account in overseas-admin overseas-fanout; do
+    if runuser -u "$account" -- test -r "$journal" ||
+        runuser -u "$account" -- test -w "$history" ||
+        runuser -u "$account" -- test -w "$etc"; then
+        fail 'service account can access protected transaction state'
+    fi
+done
+op recover
+positive_v2
+check_helper_response ''
+p 'running helper and direct recovery command respect installation journal and protected state'
+
+password=/var/lib/overseas-cache-admin/admin-password.json
+mv "$password" "$testdir/known-password"
+install -m 0600 /dev/null "$testdir/root-only-fixture"
+runuser -u overseas-admin -- ln -s "$testdir/root-only-fixture" "$password"
+reject bash "$fix/scripts/install-admin.sh" rollback
+[[ -L $password && ! -e $journal ]]
+rm "$password"
+runuser -u overseas-admin -- truncate -s 17K "$password"
+reject bash "$fix/scripts/install-admin.sh" rollback
+[[ ! -e $journal ]]
+mv -f "$testdir/known-password" "$password"
+positive_v2
+p 'rollback rejects symlink and oversized Admin password snapshot inputs'
 
 # A corrupt gate package must not replace a valid unit or open a runtime journal.
 cp -a "$fix" "$testdir/bad-gate"

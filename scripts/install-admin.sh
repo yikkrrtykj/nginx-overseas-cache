@@ -10,6 +10,7 @@ source_dir=$(cd -- "$(dirname -- "$0")/.." && pwd)
 app=/opt/overseas-cache-v2
 etc=/etc/nginx/overseas-cache
 state=/var/lib/overseas-cache-admin
+state_password=$state/admin-password.json
 history=/var/lib/overseas-cache-installer
 journal=$history/pending-install
 in_progress=/run/overseas-cache-installer.active
@@ -21,7 +22,7 @@ lock=$etc/.config.lock
 legacy_lock=/run/overseas-cache-admin.lock
 units=(ws-fanout.service overseas-cache-admin.service overseas-cache-config.service overseas-cache-config.socket)
 paths=("$upstream" "$site" "$enabled" "$etc/settings.conf" "$etc/admin-password.json"
-    "$etc/admin-v2.env" "$state/admin-password.json" "$app"
+    "$etc/admin-v2.env" "$state_password" "$app"
     /etc/logrotate.d/overseas-cache-v2)
 for unit in "${units[@]}"; do paths+=("/etc/systemd/system/$unit"); done
 for cmd in nginx systemctl flock install runuser awk dpkg tar sha256sum; do command -v "$cmd" >/dev/null || die "missing $cmd"; done
@@ -91,11 +92,28 @@ install_atomic() {
 nginx_reload() {
     nginx -t -q >/dev/null 2>&1 && systemctl reload nginx && systemctl is-active --quiet nginx
 }
+valid_captured_password() {
+    local file=$1 size
+    [[ ! -L $file ]] || return 1
+    [[ -e $file ]] || return 0
+    [[ -f $file ]] || return 1
+    size=$(stat -c %s -- "$file") || return 1
+    (( size <= 16 * 1024 ))
+}
 remember() {
     local directory=$1 path unit
     mkdir "$directory"
     for path in "${paths[@]}"; do
-        if [[ -e $path || -L $path ]]; then cp -a --parents -- "$path" "$directory"; fi
+        if [[ ! -e $path && ! -L $path ]]; then continue; fi
+        if [[ $path == "$state_password" ]]; then
+            # Preserve the leaf without following links, then validate only
+            # the captured object inside the root-owned snapshot.
+            (ulimit -c 0; ulimit -f 32; cp -a --parents -- "$path" "$directory") &&
+                valid_captured_password "$directory$path" ||
+                die 'unsafe Admin password record in installation snapshot'
+        else
+            cp -a --parents -- "$path" "$directory"
+        fi
     done
     for unit in "${units[@]}"; do
         if systemctl is-enabled --quiet "$unit" 2>/dev/null; then touch "$directory/$unit.enabled"; fi
@@ -112,6 +130,7 @@ stop_v2() {
 verify_snapshot() {
     local directory=$1 expected=$2 actual
     [[ -d $directory && ! -L $directory ]] || return 1
+    valid_captured_password "$directory$state_password" || return 1
     if [[ -n $expected ]]; then
         [[ $expected =~ ^[0-9a-f]{64}$ ]] || return 1
         actual=$(snapshot_digest "$directory") || return 1
@@ -303,9 +322,8 @@ if [[ $action == rollback || $action == uninstall ]]; then
     rmdir "$snapshot"
     remember "$snapshot"
     record_pending "$snapshot"
-    if [[ -f $state/admin-password.json && -f $history/original/etc/systemd/system/overseas-cache-admin.service ]]; then
-        modern_password=$snapshot$state/admin-password.json
-    else
+    modern_password=$snapshot$state_password
+    if [[ ! -f $modern_password || ! -f $original/etc/systemd/system/overseas-cache-admin.service ]]; then
         modern_password=
     fi
     restore "$original" online || die "could not $action"

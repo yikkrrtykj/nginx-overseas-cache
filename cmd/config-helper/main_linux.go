@@ -111,11 +111,12 @@ func main() {
 	}
 
 	s := &configstore.Store{
-		UpstreamPath: "/etc/nginx/conf.d/proxy-cache.conf",
-		SettingsPath: "/etc/nginx/overseas-cache/settings.conf",
-		BackupRoot:   "/etc/nginx/overseas-cache/backups",
-		LockPath:     "/etc/nginx/overseas-cache/.config.lock",
-		Validate:     check, Reload: reload, ValidateHost: hostname,
+		UpstreamPath:            "/etc/nginx/conf.d/proxy-cache.conf",
+		SettingsPath:            "/etc/nginx/overseas-cache/settings.conf",
+		BackupRoot:              "/etc/nginx/overseas-cache/backups",
+		LockPath:                "/etc/nginx/overseas-cache/.config.lock",
+		InstallationJournalPath: "/var/lib/overseas-cache-installer/pending-install",
+		Validate:                check, Reload: reload, ValidateHost: hostname,
 	}
 	if *beforeStart {
 		// The Nginx start job loads the restored files after validation.
@@ -127,7 +128,10 @@ func main() {
 	recoverCtx, cancel := context.WithTimeout(ctx, 40*time.Second)
 	err := s.Recover(recoverCtx)
 	cancel()
-	if err != nil {
+	// During an installation trial the socket may activate the helper. Keep
+	// it available to reject requests until the installer commits or recovers.
+	socketMode := !*recoverOnly && !*beforeStart && *origin == ""
+	if err != nil && !(socketMode && errors.Is(err, configstore.ErrInstallationPending)) {
 		log.Fatal(err)
 	}
 	if *recoverOnly || *beforeStart {
