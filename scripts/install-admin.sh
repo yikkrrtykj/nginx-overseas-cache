@@ -231,7 +231,9 @@ for account in overseas-admin overseas-fanout; do
     fi
 done
 install -d -m 0700 -o overseas-admin -g overseas-admin "$state"
-install -d -m 0755 "$app/bin" /var/log/overseas-cache
+# Set both managed directory modes explicitly. Some install providers
+# apply this process's restrictive umask to implicit parents.
+install -d -m 0755 "$app" "$app/bin" /var/log/overseas-cache
 # On a fresh host the cache parent can be absent. Create it with explicit
 # traversal permission for the packaged Nginx worker account.
 if [[ ! -d /var/cache/nginx ]]; then

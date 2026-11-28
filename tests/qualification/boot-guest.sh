@@ -41,6 +41,7 @@ case "$1" in
 provision)
     cat /etc/os-release
     uname -a
+    install --version | head -n 1
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -q
     apt-get install -y nginx python3-venv
@@ -64,6 +65,8 @@ Before=nginx.service network.target
 [Service]
 Type=simple
 ExecStartPre=/bin/ip addr replace $origin_ip/32 dev lo
+ExecStartPre=/bin/ip addr replace 10.84.71.1/32 dev lo
+ExecStartPre=/bin/ip addr replace 10.84.72.1/32 dev lo
 ExecStart=/usr/bin/python3 /home/qualification/origin.py /etc/qual-boot/ca.crt /etc/qual-boot/key
 
 [Install]
@@ -78,8 +81,8 @@ EOF
     cat > install-observe/systemctl <<'OBSERVE'
 #!/usr/bin/env bash
 if [[ $1 == enable && $2 == --now && $3 == ws-fanout.service ]]; then
-    namei -l /opt/overseas-cache-v2/bin/ws-fanout
-    findmnt -T /opt/overseas-cache-v2/bin/ws-fanout -o TARGET,FSTYPE,OPTIONS
+    namei -l /opt/overseas-cache-v2/bin/ws-fanout >&2
+    findmnt -T /opt/overseas-cache-v2/bin/ws-fanout -o TARGET,FSTYPE,OPTIONS >&2
     runuser -u overseas-fanout -- /opt/overseas-cache-v2/bin/ws-fanout --version || true
 fi
 exec /usr/bin/systemctl "$@"
@@ -98,6 +101,37 @@ normal-reboot)
     grep '^OVERSEAS_ADMIN_ALLOWED_NETWORKS=' "$config/admin-v2.env"
     grep -Eq '^OVERSEAS_ADMIN_ALLOWED_NETWORKS=.*10[.]84[.]71[.]0/24' "$config/admin-v2.env"
     printf 'PASS guest reboot, original password/ACL and data plane\n'
+    ;;
+stage-https)
+    cp "$config/admin-v2.env" /etc/qual-boot/default-admin.env
+    openssl req -nodes -x509 -newkey rsa:2048 -days 2 -subj '/CN=admin.qualification.invalid' \
+        -addext 'subjectAltName=DNS:admin.qualification.invalid' \
+        -keyout /etc/qual-boot/admin.key -out /etc/qual-boot/admin.crt >/dev/null 2>&1
+    chmod 0644 /etc/qual-boot/admin.crt
+    chmod 0640 /etc/qual-boot/admin.key
+    chgrp overseas-admin /etc/qual-boot/admin.key
+    cat > "$config/admin-v2.env" <<'EOF'
+OVERSEAS_ADMIN_HOST=10.84.71.1
+OVERSEAS_ADMIN_ALLOWED_NETWORKS=10.84.71.0/24
+OVERSEAS_ADMIN_ALLOWED_HOSTS=admin.qualification.invalid
+OVERSEAS_ADMIN_TLS_CERT=/etc/qual-boot/admin.crt
+OVERSEAS_ADMIN_TLS_KEY=/etc/qual-boot/admin.key
+EOF
+    systemctl reset-failed overseas-cache-admin
+    systemctl restart overseas-cache-admin
+    ;;
+verify-https-reboot)
+    base=https://admin.qualification.invalid:23000
+    tls=(--cacert /etc/qual-boot/admin.crt --resolve admin.qualification.invalid:23000:10.84.71.1)
+    local_login "$base" --interface 10.84.71.1 "${tls[@]}"
+    code=$(curl --noproxy '*' -sS --max-time 3 --interface 10.84.72.1 "${tls[@]}" -o /dev/null -w '%{http_code}' "$base/")
+    [[ $code == 403 ]]
+    grep -qx 'OVERSEAS_ADMIN_ALLOWED_NETWORKS=10.84.71.0/24' "$config/admin-v2.env"
+    [[ $(target_channel) == qualification-boot ]]
+    echo 'PASS verified management HTTPS hostname, allowed and denied peers, and data plane after guest reboot'
+    cp /etc/qual-boot/default-admin.env "$config/admin-v2.env"
+    systemctl reset-failed overseas-cache-admin
+    systemctl restart overseas-cache-admin
     ;;
 pending-config)
     # Seed the exact persistent state of a transaction after atomic replacement

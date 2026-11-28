@@ -99,6 +99,9 @@ run() {
 run provision
 reboot_guest
 run normal-reboot || normal_failed=1
+run stage-https
+reboot_guest
+run verify-https-reboot
 run pending-config
 reboot_guest
 run check-pending-config
