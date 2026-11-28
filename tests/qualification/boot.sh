@@ -7,6 +7,7 @@ root=$PWD
 ev=$root/artifacts/boot
 mkdir -p "$ev"
 exec > >(tee "$ev/host.log") 2>&1
+git rev-parse HEAD 'HEAD^{tree}' | tee "$ev/source.txt"
 tmp=$(mktemp -d)
 pid=
 cleanup() {

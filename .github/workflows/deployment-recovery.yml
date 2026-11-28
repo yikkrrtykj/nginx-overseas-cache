@@ -10,6 +10,9 @@ on:
       - '.github/workflows/deployment-recovery.yml'
 permissions:
   contents: read
+concurrency:
+  group: deployment-recovery-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 jobs:
   reboot:
     runs-on: ubuntu-24.04
@@ -21,6 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@v6
@@ -29,7 +33,15 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
-      - run: bash -n scripts/install-admin.sh && go test ./internal/configstore ./cmd/config-helper && bash scripts/build-release.sh
+      - name: Build the exact PR revision
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git rev-parse HEAD 'HEAD^{tree}'
+          bash -n scripts/install-admin.sh
+          go test ./internal/configstore ./cmd/config-helper
+          bash scripts/build-release.sh
       - run: bash -n tests/qualification/boot.sh && bash -n tests/qualification/boot-guest.sh
       - run: |
           sudo apt-get update
