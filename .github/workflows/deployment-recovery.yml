@@ -8,8 +8,6 @@ on:
       - 'systemd/**'
       - 'tests/qualification/**'
       - '.github/workflows/deployment-recovery.yml'
-  push:
-    branches: [codex/install-recovery-before-nginx]
 permissions:
   contents: read
 jobs:

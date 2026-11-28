@@ -90,6 +90,7 @@ restore() {
     systemctl daemon-reload || status=1
     for unit in overseas-cache-config.socket overseas-cache-config.service ws-fanout.service overseas-cache-admin.service; do
         if [[ -f $directory/$unit.active ]]; then
+            systemctl reset-failed "$unit" 2>/dev/null || true
             if [[ $mode == boot ]]; then
                 # The restored jobs can depend on this recovery unit.
                 systemctl --no-block start "$unit" || status=1
@@ -346,6 +347,7 @@ cat > "$workspace/logrotate" <<'EOF'
 EOF
 install_atomic "$workspace/logrotate" /etc/logrotate.d/overseas-cache-v2 0644
 systemctl daemon-reload
+systemctl reset-failed ws-fanout.service overseas-cache-admin.service 2>/dev/null || true
 systemctl enable --now ws-fanout.service overseas-cache-config.socket overseas-cache-admin.service >/dev/null
 nginx_reload || die 'Nginx validation or reload failed'
 for service in ws-fanout.service overseas-cache-config.socket overseas-cache-admin.service; do
