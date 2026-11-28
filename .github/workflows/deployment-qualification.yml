@@ -2,6 +2,9 @@ name: Isolated deployment qualification
 on:
   push:
     branches: [codex/preproduction-qualification]
+    paths:
+      - '.github/workflows/deployment-qualification.yml'
+      - 'tests/qualification/**'
 permissions:
   contents: read
   actions: read
