@@ -1,0 +1,20 @@
+name: PR 8 recovery boundary diagnostics
+on:
+  push:
+    branches: [codex/pr8-alternative-security-qualification]
+    paths: [.github/workflows/pr8-boundary-diagnostics.yml]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  report:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          github-token: ${{ github.token }}
+          run-id: 46129146472
+          artifact-ids: '15257306809'
+          path: evidence
+      - run: |
+          grep -Ei 'overseas-cache-config|socket|listen|failed|signature|recovery' evidence/systemd.log | tail -n 150
