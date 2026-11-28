@@ -23,7 +23,7 @@ target_channel() {
 setup_v1() {
     mkdir -p "$config"
     echo 'OVERSEAS_ADMIN_ALLOWED_NETWORKS=127.0.0.1/32,10.84.71.0/24' > "$config/admin.env"
-    cat "$password_file" | v1/admin/server.py --init-password-file "$config/admin-password.json"
+    cat "$password_file" | python3 v1/admin/server.py --init-password-file "$config/admin-password.json"
     bash v1/scripts/install-admin.sh
     sed -i 's/pgs26_p/qualification-boot/; s/REPLACE_WITH_REAL_TOKEN/fixture-boot-data-token/' "$config/settings.conf"
     systemctl reload nginx
@@ -63,6 +63,8 @@ ExecStart=/usr/bin/python3 /home/qualification/origin.py /etc/qual-boot/ca.crt /
 WantedBy=multi-user.target
 EOF
     systemctl enable --now qual-boot-origin nginx
+    install -d -m 0750 -o root -g www-data /var/cache/nginx
+    install -d -m 0750 -o www-data -g www-data /var/cache/nginx/web_cache
     setup_v1
     [[ $(target_channel) == qualification-boot ]]
     product_install
