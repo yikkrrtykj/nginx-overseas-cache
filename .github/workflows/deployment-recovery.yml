@@ -30,6 +30,7 @@ jobs:
         with:
           node-version: '24'
       - run: bash -n scripts/install-admin.sh && go test ./internal/configstore ./cmd/config-helper && bash scripts/build-release.sh
+      - run: bash -n tests/qualification/boot.sh && bash -n tests/qualification/boot-guest.sh
       - run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils ovmf ubuntu-cloudimage-keyring
