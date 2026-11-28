@@ -41,6 +41,7 @@ case "$1" in
 provision)
     cat /etc/os-release
     uname -a
+    install --version | head -n 1
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -q
     apt-get install -y nginx python3-venv
@@ -78,8 +79,8 @@ EOF
     cat > install-observe/systemctl <<'OBSERVE'
 #!/usr/bin/env bash
 if [[ $1 == enable && $2 == --now && $3 == ws-fanout.service ]]; then
-    namei -l /opt/overseas-cache-v2/bin/ws-fanout
-    findmnt -T /opt/overseas-cache-v2/bin/ws-fanout -o TARGET,FSTYPE,OPTIONS
+    namei -l /opt/overseas-cache-v2/bin/ws-fanout >&2
+    findmnt -T /opt/overseas-cache-v2/bin/ws-fanout -o TARGET,FSTYPE,OPTIONS >&2
     runuser -u overseas-fanout -- /opt/overseas-cache-v2/bin/ws-fanout --version || true
 fi
 exec /usr/bin/systemctl "$@"
