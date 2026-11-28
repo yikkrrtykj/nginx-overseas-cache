@@ -51,7 +51,7 @@ cleanup() {
     trap - EXIT
     for job in $(jobs -pr); do kill "$job" 2>/dev/null || true; done
     capture end || true
-    journalctl -u nginx -u ws-fanout -u overseas-cache-admin -u overseas-cache-config -u qual-origin --no-pager -o short-iso \
+    journalctl -u nginx -u ws-fanout -u overseas-cache-admin -u overseas-cache-config -u qual-origin -u qual-sshd --no-pager -o short-iso \
         | sed -e "s/$test_token/[REDACTED]/g" -e "s/$test_password/[REDACTED]/g" -E -e 's/lab-(ws|timing)-[0-9a-f]{32}/[REDACTED-WS]/g' > "$ev/journal.log"
     for net in qual-mgmt qual-biz qual-deny; do ip netns delete "$net" 2>/dev/null || true; done
     status=$rc
@@ -202,13 +202,17 @@ echo 'PASS V2 default ACL migration, loopback login, no direct listener, V1 cach
 mkdir -p /run/sshd
 ssh-keygen -q -N '' -t ed25519 -f "$tmp/ssh-host"
 ssh-keygen -q -N '' -t ed25519 -f "$tmp/ssh-client"
+install -m 0644 "$tmp/ssh-client.pub" /etc/qualification-ssh-authorized-key
+[ -n "$SUDO_USER" ]
 cat > "$tmp/sshd.conf" <<EOF
 Port 24222
 ListenAddress 10.84.71.1
 HostKey $tmp/ssh-host
 PidFile $tmp/sshd.pid
-AuthorizedKeysFile $tmp/ssh-client.pub
-PermitRootLogin prohibit-password
+AuthorizedKeysFile /etc/qualification-ssh-authorized-key
+AllowUsers $SUDO_USER
+UsePAM yes
+PermitRootLogin no
 PubkeyAuthentication yes
 PasswordAuthentication no
 AllowTcpForwarding local
@@ -219,7 +223,7 @@ systemd-run --unit qual-sshd /usr/sbin/sshd -D -e -f "$tmp/sshd.conf"
 sleep 0.8
 ns_ip qual-mgmt ssh -n -f -N -p 24222 -i "$tmp/ssh-client" -o BatchMode=yes -o ExitOnForwardFailure=yes \
     -o UserKnownHostsFile="$tmp/known_hosts" -o StrictHostKeyChecking=yes \
-    -L 127.0.0.1:24300:127.0.0.1:23000 root@10.84.71.1
+    -L 127.0.0.1:24300:127.0.0.1:23000 "$SUDO_USER@10.84.71.1"
 login mgmt http://127.0.0.1:24300 "$tmp/cookies"
 echo 'PASS real SSH forwarding and authenticated HTTP from isolated management client'
 
