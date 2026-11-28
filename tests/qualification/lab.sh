@@ -349,6 +349,64 @@ cmp "$tmp/v1-password" "$state/admin-password.json"
 "$py" tests/qualification/probe.py verify
 capture v2-repeat
 echo 'PASS rollback to V1 credentials, ACL, cache, and WS; second upgrade and repeat install'
+"$py" tests/qualification/timings.py "$ev"
+
+
+healthy() {
+    nginx -t -q
+    systemctl is-active --quiet nginx ws-fanout overseas-cache-admin overseas-cache-config.socket
+    login host http://127.0.0.1:23000 "$tmp/cookies"
+    cmp "$tmp/v1-settings" "$config/settings.conf"
+    cmp "$tmp/v1-password" "$state/admin-password.json"
+    [[ $(http_code biz "$data/render") == 200 ]]
+}
+install_fails() {
+    local tag=$1 candidate=$2
+    local code=0
+    bash "$candidate/scripts/install-admin.sh" > "$ev/fault-$tag.log" 2>&1 || code=$?
+    printf '%s exit %s\n' "$tag" "$code"
+    [[ $code != 0 ]]
+    grep -q 'Previous installation restored' "$ev/fault-$tag.log"
+    healthy
+    echo "PASS prior config and services after $tag"
+}
+
+# Fail one actual Nginx reload. The next one is the installer's restoration.
+drop=/run/systemd/system/nginx.service.d/qualification.conf
+mkdir -p "$(dirname "$drop")"
+cat > "$tmp/reload-once" <<EOF
+#!/bin/bash
+if [[ ! -e $tmp/injected-reload ]]; then
+    touch $tmp/injected-reload
+    exit 1
+fi
+exec /usr/sbin/nginx -s reload
+EOF
+printf '[Service]\nExecReload=\nExecReload=/bin/bash %s\n' "$tmp/reload-once" > "$drop"
+systemctl daemon-reload
+install_fails nginx-reload "$package"
+[[ -e $tmp/injected-reload ]]
+rm "$drop"
+systemctl daemon-reload
+for service in ws-fanout overseas-cache-admin; do
+    copy="$tmp/fail-$service"
+    cp -a "$package" "$copy"
+    sed -i -e 's/^Type=simple$/Type=oneshot/' -e 's/^Restart=.*$/Restart=no/' \
+        -e 's@^ExecStart=.*$@ExecStart=/bin/false@' "$copy/systemd/v2/$service.service"
+    install_fails "$service-start" "$copy"
+done
+
+# Fill only an isolated 64 KiB filesystem mapped over the installer state, then
+# prove the actual candidate command stops before modifying live files.
+mount -t tmpfs -o size=64k,mode=0700 tmpfs "$history"
+dd if=/dev/zero of="$history/fill" bs=1024 count=64 status=none
+code=0
+installer > "$ev/fault-enospc.log" 2>&1 || code=$?
+umount "$history"
+[[ $code != 0 ]]
+grep -q 'No space left on device' "$ev/fault-enospc.log"
+healthy
+echo 'PASS ENOSPC in installer staging did not alter confirmed runtime'
 
 # Ignore unpublished lab inputs; scan only service journals and emitted logs.
 if (journalctl -u nginx -u ws-fanout -u overseas-cache-admin -u overseas-cache-config -u qual-origin --no-pager;
