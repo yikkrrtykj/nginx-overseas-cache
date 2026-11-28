@@ -144,9 +144,14 @@ snapshot_digest() (
         sha256sum | cut -d ' ' -f 1
 )
 restore() {
-    local directory=$1 mode=$2 path unit status=0
+    local directory=$1 mode=$2 path unit load_state status=0
     if [[ $mode == online ]]; then stop_v2 || return 1; fi
-    for unit in "${units[@]}"; do systemctl disable --no-reload "$unit" >/dev/null 2>&1 || true; done
+    for unit in "${units[@]}"; do
+        if ! systemctl disable --no-reload "$unit" >/dev/null 2>&1; then
+            load_state=$(systemctl show --value -p LoadState "$unit") || return 1
+            [[ $load_state == not-found ]] || { printf 'Cannot disable %s during restoration.\n' "$unit" >&2; return 1; }
+        fi
+    done
     for path in "${paths[@]}"; do
         rm -rf -- "$path" || return 1
         if [[ -e $directory$path || -L $directory$path ]]; then

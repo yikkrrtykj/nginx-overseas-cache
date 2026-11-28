@@ -49,7 +49,7 @@ for bin in overseas-admin ws-fanout config-helper; do
     "$fix/bin/$bin" --version
 done
 cp -a "$fix" "$trial"
-sed -i '0,/^server {/s//server {\n    add_header X-Qualification-Trial yes always;/' "$trial/nginx/sites-available/overseas-cache"
+sed -i '0,/^server {/s//server {\n    location = /__qualification_trial { return 200 "qualification-uncommitted"; }/' "$trial/nginx/sites-available/overseas-cache"
 
 cat > "$hook/dispatch" <<'HOOK'
 #!/usr/bin/env bash
@@ -114,9 +114,9 @@ positive_v2() {
     curl --noproxy '*' -fsS --retry 4 --retry-connrefused http://127.0.0.1:3001/healthz >/dev/null
 }
 no_trial() {
-    local headers
-    headers=$(curl --noproxy '*' -fsS --max-time 2 -D - -o /dev/null http://127.0.0.1:23333/render 2>/dev/null || true)
-    if grep -qi '^X-Qualification-Trial:' <<< "$headers"; then fail 'Nginx exposed unconfirmed configuration'; fi
+    local response
+    response=$(curl --noproxy '*' -fsS --max-time 2 http://127.0.0.1:23333/__qualification_trial 2>/dev/null || true)
+    if [[ $response == qualification-uncommitted ]]; then fail 'Nginx exposed unconfirmed configuration'; fi
 }
 reject() {
     local code=0

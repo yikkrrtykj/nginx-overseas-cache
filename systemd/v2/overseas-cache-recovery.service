@@ -1,8 +1,9 @@
 [Unit]
 Description=Recover interrupted Overseas Cache deployment or configuration
-Wants=network-online.target
-After=network-online.target
+After=network.target network-online.target
 Before=nginx.service ws-fanout.service overseas-cache-admin.service
+# Explicit repeated starts must always evaluate the current guard state.
+StartLimitIntervalSec=0
 ConditionPathExists=|/var/lib/overseas-cache-installer/pending-install
 ConditionPathExists=|/etc/nginx/overseas-cache/backups/pending
 
