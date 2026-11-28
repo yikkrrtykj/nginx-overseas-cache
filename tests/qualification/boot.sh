@@ -64,14 +64,14 @@ qemu-system-x86_64 -machine q35,accel="$accel" -cpu "$cpu" -smp 2 -m 2304 -displ
     -device virtio-net-pci,netdev=net0 -netdev user,id=net0,hostfwd=tcp:127.0.0.1:24231-:22 \
     -serial file:serial.log -monitor none > qemu.log 2>&1 &
 pid=$!
-opts=(-i "$tmp/guest-key" -o BatchMode=yes -o ConnectTimeout=3 -o UserKnownHostsFile="$tmp/known_hosts" -o StrictHostKeyChecking=accept-new)
+opts=(-i "$tmp/guest-key" -o BatchMode=yes -o ConnectTimeout=3 -o ServerAliveInterval=3 -o ServerAliveCountMax=5 -o UserKnownHostsFile="$tmp/known_hosts" -o StrictHostKeyChecking=accept-new)
 guest() { ssh "${opts[@]}" -p 24231 qualification@127.0.0.1 "$@"; }
 previous=
 wait_boot() {
     local id=
-    for _ in {1..100}; do
+    for _ in {1..42}; do
         if ! kill -0 "$pid"; then cat qemu.log; return 1; fi
-        id=$(guest cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)
+        id=$(timeout 7s ssh "${opts[@]}" -p 24231 qualification@127.0.0.1 cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)
         if [[ $id =~ ^[0-9a-f-]+$ && $id != "$previous" ]]; then
             previous=$id
             printf '%s %s\n' "$release" "$id" | tee -a "$ev/boot-ids.txt"
@@ -95,7 +95,9 @@ cp "$root/tests/qualification/boot-guest.sh" guest.sh
 cp "$root/tests/origin_fixture.py" origin.py
 scp "${opts[@]}" -P 24231 v1.tar v2.tar.gz guest.sh origin.py qualification@127.0.0.1:
 run() {
-    guest "sudo bash /home/qualification/guest.sh $1" | tee "$ev/$1.log"
+    printf 'Guest %s stage %s\n' "$release" "$1"
+    timeout --kill-after=8s 150s ssh "${opts[@]}" -p 24231 qualification@127.0.0.1 \
+        "sudo bash /home/qualification/guest.sh $1" 2>&1 | tee "$ev/$1.log"
 }
 run provision
 reboot_guest
