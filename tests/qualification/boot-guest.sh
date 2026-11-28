@@ -3,7 +3,7 @@ set -Eeuo pipefail
 [[ $EUID == 0 ]]
 cd /home/qualification
 action=$1
-trap 'line=$LINENO; printf "Guest %s failed near line %s\n" "$action" "$line"; journalctl -n 22 -u nginx -u qual-boot-origin -u ws-fanout -u overseas-cache-admin --no-pager; exit 1' ERR
+trap 'line=$LINENO; printf "Guest %s failed near line %s\n" "$action" "$line"; journalctl -k -b -n 12 --grep 'DENIED|integrity|IMA' --no-pager || true; journalctl -n 35 -u nginx -u qual-boot-origin -u ws-fanout -u overseas-cache-admin --no-pager; exit 1' ERR
 config=/etc/nginx/overseas-cache
 history=/var/lib/overseas-cache-installer
 password_file=/home/qualification/lab-password
@@ -69,7 +69,18 @@ EOF
     install -d -m 0750 -o www-data -g www-data /var/cache/nginx/web_cache
     setup_v1
     [[ $(target_channel) == qualification-boot ]]
-    product_install
+    mkdir -p install-observe
+    cat > install-observe/systemctl <<'OBSERVE'
+#!/usr/bin/env bash
+if [[ $1 == enable && $2 == --now && $3 == ws-fanout.service ]]; then
+    namei -l /opt/overseas-cache-v2/bin/ws-fanout
+    findmnt -T /opt/overseas-cache-v2/bin/ws-fanout -o TARGET,FSTYPE,OPTIONS
+    runuser -u overseas-fanout -- /opt/overseas-cache-v2/bin/ws-fanout --version || true
+fi
+exec /usr/bin/systemctl "$@"
+OBSERVE
+    chmod +x install-observe/systemctl
+    PATH=/home/qualification/install-observe:$PATH product_install
     local_login http://127.0.0.1:23000
     printf 'PASS baseline V1 to candidate V2 on reboot VM\n'
     ;;
@@ -135,10 +146,12 @@ fi
 exec /usr/bin/systemctl "$@"
 EOF
     chmod +x install-hook/systemctl
-    set +e
-    PATH=/home/qualification/install-hook:$PATH product_install
-    code=$?
-    set -e
+    code=0
+    if PATH=/home/qualification/install-hook:$PATH product_install; then
+        echo 'Interrupted install unexpectedly succeeded'
+    else
+        code=$?
+    fi
     [[ $code == 137 ]]
     echo "interrupted installer status $code"
     [[ $(systemctl is-active overseas-cache-admin || true) == inactive ]]
