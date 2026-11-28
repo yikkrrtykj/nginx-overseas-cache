@@ -133,10 +133,16 @@ verify-https-reboot)
     systemctl reset-failed overseas-cache-admin
     systemctl restart overseas-cache-admin
     ;;
-pending-config)
+pending-config|legacy-pending-config)
     # Seed the exact persistent state of a transaction after atomic replacement
     # of settings and before successful Nginx validation/reload.
-    snap=admin-20261128T070000Z-qualification
+    snap=admin-20261128T070000Z-$action
+    if [[ $action == legacy-pending-config ]]; then
+        systemctl stop overseas-cache-config.service
+        install -m 0755 legacy-config-helper /opt/overseas-cache-v2/bin/config-helper
+        rm /usr/local/lib/overseas-cache/config-helper
+        [[ $(/opt/overseas-cache-v2/bin/config-helper --version 2>&1) == 8eaeb2aa8d8b ]]
+    fi
     install -d -m 0700 "$config/backups/$snap"
     install -m 0600 "$config/settings.conf" "$config/backups/$snap/settings.conf"
     install -m 0600 /etc/nginx/conf.d/proxy-cache.conf "$config/backups/$snap/proxy-cache.conf"
@@ -147,6 +153,32 @@ pending-config)
     [[ $(target_channel) == qualification-boot ]]
     sync
     printf 'Seeded on-disk pending config, active Nginx still confirmed baseline\n'
+    if [[ $action == legacy-pending-config ]]; then
+        mkdir legacy-upgrade-hook
+        cat > legacy-upgrade-hook/systemctl <<'LEGACY'
+#!/usr/bin/env bash
+set -eu
+/usr/bin/systemctl "$@"
+if [[ $1 == daemon-reload ]]; then
+    sync
+    kill -KILL "$PPID"
+    exit 137
+fi
+LEGACY
+        chmod +x legacy-upgrade-hook/systemctl
+        code=0
+        PATH=/home/qualification/legacy-upgrade-hook:$PATH product_install || code=$?
+        [[ $code == 137 && -s $config/backups/pending ]]
+        [[ $(/opt/overseas-cache-v2/bin/config-helper --version 2>&1) == 8eaeb2aa8d8b ]]
+        [[ $(/usr/local/lib/overseas-cache/config-helper --version 2>&1) == "$("$package/bin/config-helper" --version 2>&1)" ]]
+        echo 'Interrupted upgrade immediately after loading the gate with the original runtime helper installed'
+    fi
+    ;;
+check-legacy-pending-config)
+    [[ $(target_channel) == qualification-boot && ! -e $config/backups/pending ]]
+    [[ $(/opt/overseas-cache-v2/bin/config-helper --version 2>&1) == 8eaeb2aa8d8b ]]
+    echo 'PASS boot recovered pending config with an original V2 runtime helper still installed'
+    install -m 0755 "$package/bin/config-helper" /opt/overseas-cache-v2/bin/config-helper
     ;;
 check-pending-config)
     channel=$(target_channel)

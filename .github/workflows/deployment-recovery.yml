@@ -62,6 +62,12 @@ jobs:
         with:
           name: recovery-linux-release
           path: dist
+      - uses: actions/download-artifact@v7
+        with:
+          github-token: ${{ github.token }}
+          run-id: 46076576495
+          artifact-ids: '15236030131'
+          path: legacy-dist
       - run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils ovmf ubuntu-cloudimage-keyring

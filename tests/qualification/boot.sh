@@ -20,6 +20,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'printf "Boot lab failed at line %s\n" "$LINENO"' ERR
 ( cd dist; sha256sum -c SHA256SUMS ) | tee "$ev/checksums.txt"
+( cd legacy-dist; sha256sum --check --strict SHA256SUMS ) | tee "$ev/legacy-checksums.txt"
 cd "$tmp"
 image=ubuntu-$release-server-cloudimg-amd64.img
 case "$release" in 24.04) series=noble;; 26.04) series=resolute;; esac
@@ -91,9 +92,11 @@ wait_boot
 guest 'sudo cloud-init status --wait'
 git -C "$root" archive 0e2bb77bdacc4e1f825858a0d59e2070828dd1b7 > v1.tar
 cp "$root"/dist/nginx-overseas-cache-*-linux-amd64.tar.gz v2.tar.gz
+legacy=nginx-overseas-cache-8eaeb2aa8d8b-linux-amd64
+tar -xOzf "$root/legacy-dist/$legacy.tar.gz" "$legacy/bin/config-helper" > legacy-config-helper
 cp "$root/tests/qualification/boot-guest.sh" guest.sh
 cp "$root/tests/origin_fixture.py" origin.py
-scp "${opts[@]}" -P 24231 v1.tar v2.tar.gz guest.sh origin.py qualification@127.0.0.1:
+scp "${opts[@]}" -P 24231 v1.tar v2.tar.gz legacy-config-helper guest.sh origin.py qualification@127.0.0.1:
 run() {
     local label=${2:-$1}
     printf 'Guest %s stage %s\n' "$release" "$label"
@@ -109,6 +112,9 @@ run verify-https-reboot
 run pending-config
 reboot_guest
 run check-pending-config
+run legacy-pending-config
+reboot_guest
+run check-legacy-pending-config
 run interrupt-install
 run pause-recovery
 python3 - "$tmp/qmp" <<'QMP'

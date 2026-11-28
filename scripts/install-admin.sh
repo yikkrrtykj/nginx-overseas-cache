@@ -260,11 +260,16 @@ recover_install() {
     printf 'Recovered interrupted installation from %s.\n' "$snapshot_name"
 }
 recover_config() {
-    local option=$1
+    local option=$1 helper=$recovery_dir/config-helper
     [[ -e $etc/backups/pending ]] || return 0
-    [[ -x $app/bin/config-helper ]] || die 'recover the interrupted configuration transaction before continuing'
+    # Online callers can recover directly from a verified package, including
+    # on hosts where the persistent gate was never installed or is damaged.
+    if [[ $action != recover-before-start && -x $source_dir/bin/config-helper ]]; then
+        helper=$source_dir/bin/config-helper
+    fi
+    [[ -x $helper ]] || die 'recovery configuration helper missing; use recover from a verified release'
     flock -u 9
-    "$app/bin/config-helper" "$option"
+    "$helper" "$option"
     flock -w 85 9 || die 'configuration lock is busy'
 }
 
@@ -308,6 +313,9 @@ install_recovery_gate() {
     local unit drop_in
     bash -n "$source_dir/scripts/install-admin.sh" || die 'invalid recovery script'
     install -d -m 0755 "$recovery_dir"
+    # Bootstrap the compatible recovery binary before publishing its gate,
+    # while the managed runtime may still be from an older V2 release.
+    install_atomic "$source_dir/bin/config-helper" "$recovery_dir/config-helper" 0755
     install_atomic "$source_dir/scripts/install-admin.sh" "$recovery_dir/install-admin.sh" 0755
     systemd-analyze verify "$source_dir/systemd/v2/overseas-cache-recovery.service" ||
         die 'invalid recovery service'

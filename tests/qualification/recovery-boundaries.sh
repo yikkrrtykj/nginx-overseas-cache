@@ -362,7 +362,7 @@ p 'interrupted configuration recovery replayed idempotently'
 
 op uninstall
 positive_v1
-for component in "$gate" "/etc/systemd/system/$service" /etc/systemd/system/{nginx,overseas-cache-admin,ws-fanout}.service.d/overseas-cache-recovery.conf; do
+for component in "$gate" /usr/local/lib/overseas-cache/config-helper "/etc/systemd/system/$service" /etc/systemd/system/{nginx,overseas-cache-admin,ws-fanout}.service.d/overseas-cache-recovery.conf; do
     [[ -f $component ]]
 done
 [[ $(cat /proc/sys/kernel/random/boot_id) == "$boot" ]]
