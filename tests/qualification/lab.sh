@@ -29,7 +29,7 @@ tar -xzf "$archive" -C "$tmp"
 package=$(find "$tmp" -mindepth 1 -maxdepth 1 -type d -name 'nginx-overseas-cache-*')
 find "$package/licenses" -type f -printf '%f\n' | sort | tee "$ev/licenses.txt"
 for binary in overseas-admin ws-fanout config-helper; do
-    "$package/bin/$binary" --version | tee -a "$ev/build-version.txt"
+    "$package/bin/$binary" --version 2>&1 | tee -a "$ev/build-version.txt"
 done
 [[ $(grep -c '8eaeb2aa8d8b' "$ev/build-version.txt") == 3 ]]
 

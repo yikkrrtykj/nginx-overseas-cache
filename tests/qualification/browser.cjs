@@ -3,7 +3,7 @@ const { chromium } = require('../../web/node_modules/playwright-core');
 
 async function main() {
   const [version, base, evidence] = process.argv.slice(2);
-  const browser = await chromium.launch({ args: ['--no-sandbox'] });
+  const browser = await chromium.launch({ args: ['--no-sandbox'], executablePath: process.env.QUAL_BROWSER_EXECUTABLE || undefined });
   try {
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     const page = await context.newPage();
