@@ -24,6 +24,7 @@ jobs:
           run-id: 46076576495
           name: linux-release
           path: dist
+      - run: bash -n tests/qualification/boot.sh && bash -n tests/qualification/boot-guest.sh
       - run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils ovmf ubuntu-cloudimage-keyring

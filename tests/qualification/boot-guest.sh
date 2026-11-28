@@ -3,7 +3,12 @@ set -Eeuo pipefail
 [[ $EUID == 0 ]]
 cd /home/qualification
 action=$1
-trap 'line=$LINENO; printf "Guest %s failed near line %s\n" "$action" "$line"; journalctl -k -b -n 12 --grep 'DENIED|integrity|IMA' --no-pager || true; journalctl -n 35 -u nginx -u qual-boot-origin -u ws-fanout -u overseas-cache-admin --no-pager; exit 1' ERR
+guest_error() {
+    printf 'Guest %s failed near line %s\n' "$action" "$1"
+    journalctl -k -b -n 12 --grep 'DENIED|integrity|IMA' --no-pager || true
+    journalctl -n 35 -u nginx -u qual-boot-origin -u ws-fanout -u overseas-cache-admin -u overseas-cache-recovery --no-pager || true
+}
+trap 'guest_error "$LINENO"' ERR
 config=/etc/nginx/overseas-cache
 history=/var/lib/overseas-cache-installer
 password_file=/home/qualification/lab-password
