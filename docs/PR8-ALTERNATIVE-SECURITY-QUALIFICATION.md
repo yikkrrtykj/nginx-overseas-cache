@@ -19,7 +19,7 @@
 | 中风险 | root 回滚从服务账户可写的密码文件路径迁移记录，旧代码可能跟随快照中的符号链接。 | 仅在 root 私有快照中捕获单个文件条目，限制暂存大小，校验捕获对象是 16 KiB 以内的普通文件。拒绝符号链接、超大文件、目录和 FIFO，复验未复制目录内容。 [快照实现](https://github.com/yikkrrtykj/nginx-overseas-cache/blob/381e1c1c396cdaa98fc53c1a3aa7abf9909bf306/scripts/install-admin.sh#L95) |
 | 回归阻塞 | 冷启动拒绝测试后，试运行的 Unix socket 可在恢复 V1 时残留，使再次切到 V2 时配置请求连接失败。 | 恢复旧服务定义前停止 socket，即使 systemd 已丢失其配置文件也核对运行状态。V1 恢复明确断言试运行 socket 已清理，V2 重装后用真实配置 RPC 复验。 [失败运行](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46129146472) · [最终回归](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46158042212) |
 | 回归阻塞（解除 Draft 后 Codex P2） | 升级早期中断时，旧 V2 运行 Helper 缺少 `--recover-before-nginx`，开机配置恢复受阻。 | 在加载门禁前持久化兼容恢复 Helper。Ubuntu 24.04 与 26.04 真实来宾机使用原 main 的 Helper，在加载门禁后杀掉安装器，重启时恢复已确认配置且仍保留旧运行二进制。 [已解决线程](https://github.com/yikkrrtykj/nginx-overseas-cache/pull/8#discussion_r4726395051) · [24.04](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46158042212/job/141019140960) · [26.04](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46158042212/job/141019140983) |
-| 回归阻塞（再次解除 Draft 后 Codex P2） | 历史原始快照可能把 Renderer 指令内嵌在站点中。旧检查会拒绝合法原始快照，阻断回滚与卸载。 | 无独立设置文件时验证三项内嵌指令齐全。迁移与校验共用解析器，已加密封快照仍使用原哈希校验。在两种 Ubuntu amd64 和原生 arm64 同次开机环境验证退回旧 V1、实际重定向和缺项拒绝。 [已解决线程](https://github.com/yikkrrtykj/nginx-overseas-cache/pull/8#discussion_r4727565713) · [恢复矩阵](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46158042212) |
+| 回归阻塞（再次解除 Draft 后 Codex P2） | 历史原始快照可能把 Renderer 指令内嵌在站点中。旧检查会拒绝合法原始快照，阻断回滚与卸载。 | 无独立设置文件时验证三项内嵌指令齐全。迁移与校验共用解析器，已封存的快照仍使用原哈希校验。在两种 Ubuntu amd64 和原生 arm64 同次开机环境验证退回旧 V1、实际重定向和缺项拒绝。 [已解决线程](https://github.com/yikkrrtykj/nginx-overseas-cache/pull/8#discussion_r4727565713) · [恢复矩阵](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46158042212) |
 
 独立审计在原实现之外逐次审查初审和每一版修改，最终以 `381e1c1c396cdaa98fc53c1a3aa7abf9909bf306` 和上述 Tree 给出 **PASS，0 未解决高风险项或有效合并阻塞项**。审计覆盖 root 安装器、systemd 依赖、PID 启动时间和实际 flock、路径及符号链接、原子临时文件、记录完整性与权限、配置和安装恢复并发、失败时保留日志、凭据和供应链。普通 [Codex Code Review 回执](https://github.com/yikkrrtykj/nginx-overseas-cache/pull/8#issuecomment-7241233183) 单列，精确 HEAD 0 findings。
 
@@ -47,4 +47,18 @@
 
 精确 PR 构建 `381e1c1c396c` 的 [Artifact 15268392894](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46158042197/artifacts/15268392894) 用于隔离验收。ZIP SHA256 为 `fd7883086f09454dde82cab060001262b76beae7a1903850e1c57c76cae2128e`。amd64 和 arm64 包 SHA256 分别为 `3b5f5839edb0625371fb94896b38c1fb162e9de776bb5aa6ce151304a2113d3e`、`c4b2f3020f802613da328b6b61d4f60daff26b8f9f670899684ea8a767b1ee91`。
 
-当前等待最终合并门禁。合并后从精确 main 构建新的现场候选包并记录对应验证。
+解除 Draft 后触发的 [最终普通 Code Review](https://github.com/yikkrrtykj/nginx-overseas-cache/pull/8#issuecomment-7236491544) 在精确候选 HEAD 上完成，0 findings，两个历史 P2 线程均已解决，未解决线程为 0。
+
+PR #8 通过 merge commit `fb3d2820b18c6b95c4bb439ded7cac62a26bec30` 合入 `main`，保留 15 个原始提交。两个父提交依次为 `8eaeb2aa8d8b6552fc5abe7aaf04581678814a88` 和 `381e1c1c396cdaa98fc53c1a3aa7abf9909bf306`。合并 Tree `80f07ab40058ebf66c5a2c5c4fd3000c0a6462bb` 与审查候选完全一致。
+
+合并后从隔离工作流触发精确 main 的标准 CI，**8/8 PASS**。恢复工作流的 6/6 PASS 来自等同 Tree 的 PR HEAD。原生 arm64 迁移、回滚与 WebSocket 帧通过。Fanout 入口、核心源码和 Go 依赖文件与合并前 main 的 Git 对象一致，#5 的完整小时级数据继续适用。 [main CI](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46159570297) · [PR 恢复证据](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46158042212) · [原生 arm64](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46158201836)
+
+| 现场候选包 | SHA256 |
+| --- | --- |
+| [Artifact 15269385931](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46159570297/artifacts/15269385931) ZIP | `7e546e717e0c46f1bfe4822122a0ea8cca37c9be0358611c515664fc1372acac` |
+| Linux amd64 tar.gz | `10c48071e4e5faa89ac5b23983479fa2ca6ae06da645b75a19694f73e1432a2e` |
+| Linux arm64 tar.gz | `7d2543ab50be4881a2c792e2923f0bf98a665ae06b38ca67b80e7d9a4732c33a` |
+
+主工作流两次构建校验和一致。双架构隔离验证分别在原生 amd64 和 arm64 校验 ZIP digest、`SHA256SUMS`、六份许可证及声明、源码随包文件、三个二进制版本 `fb3d2820b18c`。与精确 PR 包逐文件比较时，脚本、配置、单元、文档和许可证一致，三个二进制和归档带合并提交版本。对照原 main 包，包内部署手册和安装器已更新，并增加 systemd 恢复单元和依赖配置。 [双架构验证](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46159555739)
+
+**READY FOR SITE ACCEPTANCE / PRODUCTION HOLD。** 现场候选包通过 GitHub Actions Artifact 交付，等待现场验收授权。

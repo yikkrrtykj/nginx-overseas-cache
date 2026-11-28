@@ -4,9 +4,16 @@
 
 ## 候选包与授权
 
-- [PR #8](https://github.com/yikkrrtykj/nginx-overseas-cache/pull/8) 的隔离验证已通过。已验证的 PR HEAD 为 `b1b8c448b47681732117f3e8069c3ae3f2fb35d9`，Tree 为 `8d9a37de9f3faed6556dca8d32043ad6f4bf5203`。合并仍受独立 Security Review 门禁约束。[标准 CI](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46125109307) · [恢复 CI](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46125109300) · [原生 arm64](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46125778125)
-- 当前待登记正式的现场验收候选 Artifact。合并后使用精确 main 的标准 CI 构建，登记 main SHA、Tree、Artifact ID、ZIP digest、对应架构 tar.gz SHA256 和三个二进制版本。待候选包登记并获得现场授权后启动下列步骤。
-- 原 main `8eaeb2aa8d8b6552fc5abe7aaf04581678814a88` 及旧 PR `63a39bfe5a920553633defc834f91af422f0d0dd` 的包只作历史追溯。最终 PR [Artifact 15255552073](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46125109307/artifacts/15255552073) 保留为隔离验证证据。
+**READY FOR SITE ACCEPTANCE / PRODUCTION HOLD。** [PR #8](https://github.com/yikkrrtykj/nginx-overseas-cache/pull/8) 已合并。现场验收候选包由精确 `main` `fb3d2820b18c6b95c4bb439ded7cac62a26bec30` 构建，Tree 为 `80f07ab40058ebf66c5a2c5c4fd3000c0a6462bb`，与已审查的 PR HEAD `381e1c1c396cdaa98fc53c1a3aa7abf9909bf306` 一致。现场验收和生产变更须各自授权。 [main CI 8/8](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46159570297) · [恢复 CI 6/6](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46158042212) · [双架构包验证](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46159555739)
+
+| 对象 | 版本或 SHA256 |
+| --- | --- |
+| [GitHub Actions Artifact 15269385931](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46159570297/artifacts/15269385931) ZIP | `7e546e717e0c46f1bfe4822122a0ea8cca37c9be0358611c515664fc1372acac` |
+| Linux amd64 tar.gz | `10c48071e4e5faa89ac5b23983479fa2ca6ae06da645b75a19694f73e1432a2e` |
+| Linux arm64 tar.gz | `7d2543ab50be4881a2c792e2923f0bf98a665ae06b38ca67b80e7d9a4732c33a` |
+| `overseas-admin`、`ws-fanout`、`config-helper` | 两种架构均为 `fb3d2820b18c` |
+
+原 main 和各 Draft 包只作历史追溯。最终 PR [Artifact 15268392894](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46158042197/artifacts/15268392894) 用于对应 HEAD 的隔离验证。现场批准后使用上述 main 候选包。
 
 ## 开始前填写
 
@@ -49,4 +56,4 @@
 
 1. 暂停后续配置写入、重复切换和服务启动。观察 `journalctl -u overseas-cache-recovery.service` 以及 `nginx.service`、`overseas-cache-admin.service`、`ws-fanout.service` 的状态。保留 `/var/lib/overseas-cache-installer/pending-install`、`/etc/nginx/overseas-cache/backups/pending`、`original` 链接及相关快照。证据仅记录日志和快照标识，按现场要求脱敏。
 2. 如果同一开机周期内仍有受管进程运行，门禁可能阻断启动以避免 systemd 等待环。在已批准的恢复窗口，从已验证且获批的包目录执行 `sudo bash scripts/install-admin.sh recover`。处理磁盘不足、损坏快照、配置校验或 systemd 错误后，先保留证据，再按部署手册重试或走已验证的 VM 快照回退路径。
-3. 恢复后确认待恢复记录清除，执行 `sudo nginx -t`，核对 Nginx、Admin、Fanout 及对应版本的 Helper socket，复验认证、ACL、缓存、WebSocket 和画面。V1 回滚及 V2 卸载保留门禁，以便恢复中断的事务。清理步骤见[部署手册](https://github.com/yikkrrtykj/nginx-overseas-cache/blob/b1b8c448b47681732117f3e8069c3ae3f2fb35d9/docs/DEPLOYMENT.md#recovery-gate-and-its-lifecycle)。
+3. 恢复后确认待恢复记录清除，执行 `sudo nginx -t`，核对 Nginx、Admin、Fanout 及对应版本的 Helper socket，复验认证、ACL、缓存、WebSocket 和画面。V1 回滚及 V2 卸载保留门禁和独立的恢复 Helper，以便重放中断的事务。旧 V2 的运行 Helper 缺少新参数时，开机门禁使用已暂存的恢复 Helper。清理步骤见[部署手册](https://github.com/yikkrrtykj/nginx-overseas-cache/blob/fb3d2820b18c6b95c4bb439ded7cac62a26bec30/docs/DEPLOYMENT.md#recovery-gate-and-its-lifecycle)。
