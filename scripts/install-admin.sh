@@ -5,7 +5,7 @@ umask 077
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 [[ $EUID == 0 ]] || die 'run as root'
 action=${1:-install}
-case $action in install|rollback|uninstall|recover-before-start) ;; *) die 'usage: install-admin.sh [install|rollback|uninstall]';; esac
+case $action in install|rollback|uninstall|recover|recover-before-start) ;; *) die 'usage: install-admin.sh [install|rollback|uninstall|recover]';; esac
 source_dir=$(cd -- "$(dirname -- "$0")/.." && pwd)
 app=/opt/overseas-cache-v2
 etc=/etc/nginx/overseas-cache
@@ -24,7 +24,7 @@ paths=("$upstream" "$site" "$enabled" "$etc/settings.conf" "$etc/admin-password.
     "$etc/admin-v2.env" "$state/admin-password.json" "$app"
     /etc/logrotate.d/overseas-cache-v2)
 for unit in "${units[@]}"; do paths+=("/etc/systemd/system/$unit"); done
-for cmd in nginx systemctl flock install runuser awk dpkg; do command -v "$cmd" >/dev/null || die "missing $cmd"; done
+for cmd in nginx systemctl flock install runuser awk dpkg tar sha256sum; do command -v "$cmd" >/dev/null || die "missing $cmd"; done
 
 if [[ $action == install ]]; then
     version=$(nginx -v 2>&1)
@@ -33,23 +33,54 @@ if [[ $action == install ]]; then
     dpkg --compare-versions "$version" ge 1.19.3 || die 'Nginx 1.19.3 or newer is required'
 fi
 
+process_start() {
+    local pid=$1 stat
+    local fields=()
+    IFS= read -r stat < "/proc/$pid/stat" || return 1
+    read -r -a fields <<< "${stat##*) }"
+    [[ "${fields[0]:-}" != Z && "${fields[0]:-}" != X && "${fields[19]:-}" =~ ^[0-9]+$ ]] || return 1
+    printf '%s\n' "${fields[19]}"
+}
+live_activation() {
+    local pid started extra
+    [[ -f $in_progress && ! -L $in_progress ]] || return 1
+    IFS=' ' read -r pid started extra < "$in_progress" || return 1
+    [[ $pid =~ ^[1-9][0-9]*$ && $started =~ ^[0-9]+$ && -z $extra ]] || return 1
+    [[ $(process_start "$pid" 2>/dev/null) == "$started" ]] || return 1
+    [[ /proc/$pid/fd/8 -ef $history/install.lock ]] || return 1
+    # The lock belongs to the installer's open file description.
+    grep -qE '^lock:[[:space:]].*FLOCK[[:space:]]+ADVISORY[[:space:]]+WRITE' "/proc/$pid/fdinfo/8" 2>/dev/null
+}
+allow_activation() {
+    local owner=$BASHPID started temporary
+    started=$(process_start "$owner") || return 1
+    temporary=$(mktemp -- /run/.overseas-cache-activation.XXXXXX) || return 1
+    printf '%s %s\n' "$owner" "$started" > "$temporary" || return 1
+    mv -fT -- "$temporary" "$in_progress"
+}
 mkdir -p "$history" "$etc" "$etc/backups"
 chmod 700 "$history" "$etc" "$etc/backups"
-exec 8>"$history/install.lock"
+exec 8>>"$history/install.lock"
 if [[ $action == recover-before-start ]]; then
     if ! flock -n 8; then
-        [[ -e $in_progress ]] && exit 0
-        die 'recovery could not acquire the installation lock'
+        # Starting a validated trial is the only installer-owned reentry.
+        if live_activation; then exit 0; fi
+        die 'service start blocked by an active installation or a retained lock'
     fi
 else
     flock -w 30 8 || die 'another installer is running'
 fi
+rm -f -- "$in_progress"
 touch "$lock" "$legacy_lock"
 chmod 600 "$lock" "$legacy_lock"
 exec 7<>"$legacy_lock"
-flock -w 30 7 || die 'another V1 configuration operation is running'
 exec 9<>"$lock"
-flock -w 85 9 || die 'another configuration transaction is running'
+if [[ $action == recover-before-start ]]; then
+    flock -n 7 && flock -n 9 || die 'service start blocked by an active configuration transaction'
+else
+    flock -w 30 7 || die 'another V1 configuration operation is running'
+    flock -w 85 9 || die 'another configuration transaction is running'
+fi
 
 install_atomic() {
     local input=$1 destination=$2 mode=$3 temporary
@@ -72,22 +103,63 @@ remember() {
     done
 }
 stop_v2() {
-    systemctl stop overseas-cache-admin.service overseas-cache-config.socket overseas-cache-config.service ws-fanout.service 2>/dev/null || true
+    local unit load_state
+    for unit in overseas-cache-admin.service overseas-cache-config.socket overseas-cache-config.service ws-fanout.service; do
+        load_state=$(systemctl show --value -p LoadState "$unit") || return 1
+        if [[ $load_state != not-found ]]; then systemctl stop "$unit" || return 1; fi
+    done
 }
+verify_snapshot() {
+    local directory=$1 expected=$2 actual
+    [[ -d $directory && ! -L $directory ]] || return 1
+    if [[ -n $expected ]]; then
+        [[ $expected =~ ^[0-9a-f]{64}$ ]] || return 1
+        actual=$(snapshot_digest "$directory") || return 1
+        [[ $actual == "$expected" ]] || return 1
+    elif [[ -f $directory/.sha256 ]]; then
+        IFS= read -r expected < "$directory/.sha256" || return 1
+        [[ -n $expected ]] || return 1
+        verify_snapshot "$directory" "$expected" || return 1
+    else
+        # Previously shipped snapshots have no checksum. Validate the
+        # essential dependencies implied by the saved service files.
+        if [[ -e $directory$site || -L $directory$enabled ]]; then
+            [[ -s $directory$site && -s $directory$upstream && -s $directory$etc/settings.conf ]] || return 1
+        fi
+        if grep -qsF "$app/bin/" "$directory/etc/systemd/system/overseas-cache-admin.service"; then
+            [[ -x $directory$app/bin/overseas-admin && -x $directory$app/bin/ws-fanout &&
+                -x $directory$app/bin/config-helper && -s $directory$etc/admin-v2.env &&
+                -s $directory$state/admin-password.json ]] || return 1
+        fi
+    fi
+}
+snapshot_digest() (
+    set -o pipefail
+    cd -- "$1" || exit 1
+    # Exclude the seal itself. The sorted archive covers names, file bytes,
+    # links, modes, ownership and saved systemd state markers.
+    find . -mindepth 1 -maxdepth 1 ! -name .sha256 -print0 |
+        LC_ALL=C sort -z |
+        LC_ALL=C tar --sort=name -cf - --null -T - |
+        sha256sum | cut -d ' ' -f 1
+)
 restore() {
     local directory=$1 mode=$2 path unit status=0
-    if [[ $mode == online ]]; then stop_v2; fi
+    if [[ $mode == online ]]; then stop_v2 || return 1; fi
     for unit in "${units[@]}"; do systemctl disable --no-reload "$unit" >/dev/null 2>&1 || true; done
     for path in "${paths[@]}"; do
-        rm -rf -- "$path" || status=1
+        rm -rf -- "$path" || return 1
         if [[ -e $directory$path || -L $directory$path ]]; then
-            mkdir -p "$(dirname "$path")" && cp -a -- "$directory$path" "$path" || status=1
+            mkdir -p "$(dirname "$path")" && cp -a -- "$directory$path" "$path" || return 1
         fi
     done
     for unit in "${units[@]}"; do
         if [[ -f $directory/$unit.enabled ]]; then systemctl enable --no-reload "$unit" >/dev/null || status=1; fi
     done
-    systemctl daemon-reload || status=1
+    systemctl daemon-reload || return 1
+    (( status == 0 )) || return 1
+    nginx -t -q >/dev/null 2>&1 || { printf 'Restored Nginx configuration did not validate.\n' >&2; return 1; }
+    if [[ $mode == online ]]; then allow_activation || return 1; fi
     for unit in overseas-cache-config.socket overseas-cache-config.service ws-fanout.service overseas-cache-admin.service; do
         if [[ -f $directory/$unit.active ]]; then
             systemctl reset-failed "$unit" 2>/dev/null || true
@@ -100,7 +172,7 @@ restore() {
         fi
     done
     if [[ $mode == boot ]]; then
-        nginx -t -q >/dev/null 2>&1 || status=1
+        return "$status"
     elif systemctl is-active --quiet nginx; then
         nginx_reload || status=1
     else
@@ -110,26 +182,31 @@ restore() {
 }
 
 record_pending() {
-    local directory=$1 temporary
+    local directory=$1 temporary digest
+    digest=$(snapshot_digest "$directory") || return 1
+    printf '%s\n' "$digest" > "$directory/.sha256"
     temporary=$(mktemp -- "$history/.pending.XXXXXX")
-    printf '%s\n' "$(basename "$directory")" > "$temporary"
+    printf '%s %s\n' "$(basename "$directory")" "$digest" > "$temporary"
+    # Put the snapshot on disk before making it eligible for recovery.
+    sync -f "$history"
     mv -fT -- "$temporary" "$journal"
-    # Persist the snapshot and record before replacing any active files.
-    sync
+    sync -f "$history"
 }
 finish_pending() {
     # Persist state across /etc, /opt and /var before removing the marker.
-    sync || return 1
+    sync -f "$etc" /etc/nginx/conf.d /etc/nginx/sites-available /etc/nginx/sites-enabled \
+        /etc/systemd/system /etc/logrotate.d /opt /var/lib "$history" || return 1
     rm -f -- "$journal" || return 1
     sync -f "$history"
 }
 recover_install() {
-    local mode=$1 snapshot_name
-    IFS= read -r snapshot_name < "$journal" || die 'cannot read pending installation snapshot'
+    local mode=$1 snapshot_name digest extra
+    IFS=' ' read -r snapshot_name digest extra < "$journal" || die 'cannot read pending installation snapshot'
+    [[ -z $extra ]] || die 'invalid pending installation record'
     [[ $snapshot_name =~ ^(before|pre-rollback|pre-uninstall)\.[A-Za-z0-9]{6}$ ]] ||
         die 'invalid pending installation snapshot name'
-    [[ -d $history/$snapshot_name && ! -L $history/$snapshot_name ]] ||
-        die 'pending installation snapshot is missing'
+    verify_snapshot "$history/$snapshot_name" "$digest" ||
+        die 'pending installation snapshot is missing or damaged'
     restore "$history/$snapshot_name" "$mode" || die 'pending installation restore failed'
     finish_pending
     printf 'Recovered interrupted installation from %s.\n' "$snapshot_name"
@@ -144,19 +221,20 @@ recover_config() {
 }
 
 if [[ $action == recover-before-start ]]; then
-    mode=boot
-    if systemctl is-active --quiet nginx; then mode=online; fi
-    if [[ -e $journal ]]; then
-        [[ $mode == boot ]] || die 'interrupted installation requires recovery before services start'
-        recover_install boot
-    fi
-    if [[ $mode == boot ]]; then recover_config --recover-before-nginx; else recover_config --recover; fi
+    # A synchronous systemd stop/reload from an ordered startup gate can
+    # wait on that very gate. Use explicit online recovery if a service
+    # already has a process and needs to be stopped before restoration.
+    for unit in nginx.service overseas-cache-admin.service ws-fanout.service overseas-cache-config.service; do
+        pid=$(systemctl show --value -p MainPID "$unit") || die "cannot inspect $unit"
+        if [[ -n $pid && $pid != 0 ]]; then
+            die 'pending recovery blocks service start while managed processes are running; run install-admin.sh recover'
+        fi
+    done
+    if [[ -e $journal ]]; then recover_install boot; fi
+    recover_config --recover-before-nginx
     exit 0
 fi
 
-# Avoid reentering the installer when its systemd jobs start services.
-# Reboot clears this runtime marker. The install lock serializes retries.
-touch "$in_progress"
 workspace=
 snapshot=
 rollback_install() {
@@ -164,7 +242,8 @@ rollback_install() {
     trap - EXIT
     if [[ -n $workspace ]]; then rm -rf -- "$workspace" || true; fi
     if (( code != 0 )) && [[ -n $snapshot && -e $journal ]]; then
-        if restore "$snapshot" online && finish_pending; then
+        rm -f -- "$in_progress" || true
+        if verify_snapshot "$snapshot" '' && restore "$snapshot" online && finish_pending; then
             printf 'Install failed. Previous installation restored.\n' >&2
         else
             printf 'Install failed. Automatic recovery incomplete. Snapshot %s\n' "$snapshot" >&2
@@ -177,13 +256,13 @@ trap rollback_install EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-if [[ -e $journal ]]; then recover_install online; fi
-recover_config --recover
-
 install_recovery_gate() {
     local unit drop_in
+    bash -n "$source_dir/scripts/install-admin.sh" || die 'invalid recovery script'
     install -d -m 0755 "$recovery_dir"
     install_atomic "$source_dir/scripts/install-admin.sh" "$recovery_dir/install-admin.sh" 0755
+    systemd-analyze verify "$source_dir/systemd/v2/overseas-cache-recovery.service" ||
+        die 'invalid recovery service'
     install_atomic "$source_dir/systemd/v2/overseas-cache-recovery.service" \
         /etc/systemd/system/overseas-cache-recovery.service 0644
     for unit in nginx.service overseas-cache-admin.service ws-fanout.service; do
@@ -191,10 +270,30 @@ install_recovery_gate() {
         install -d -m 0755 "$drop_in"
         install_atomic "$source_dir/systemd/v2/recovery.conf" "$drop_in/overseas-cache-recovery.conf" 0644
     done
+    systemctl daemon-reload
+    systemctl show --value -p Requires nginx.service | grep -qw overseas-cache-recovery.service ||
+        die 'Nginx recovery dependency is missing'
+    systemctl show --value -p After nginx.service | grep -qw overseas-cache-recovery.service ||
+        die 'Nginx recovery ordering is missing'
+    sync
 }
 
+if [[ $action == install ]]; then
+    for bin in overseas-admin ws-fanout config-helper; do
+        [[ -x $source_dir/bin/$bin ]] || die 'run from a built V2 release archive (see docs/DEPLOYMENT.md)'
+        "$source_dir/bin/$bin" --version >/dev/null || die "binary $bin cannot run on this host"
+    done
+    install_recovery_gate
+fi
+if [[ -e $journal ]]; then recover_install online; fi
+rm -f -- "$in_progress"
+if systemctl is-active --quiet nginx; then recover_config --recover; else recover_config --recover-before-nginx; fi
+if [[ $action == recover ]]; then exit 0; fi
+
 if [[ $action == rollback || $action == uninstall ]]; then
-    [[ -d $history/original ]] || die 'no pre-V2 installation snapshot'
+    original=$(realpath -e -- "$history/original") || die 'no pre-V2 installation snapshot'
+    [[ $(dirname "$original") == "$history" ]] && verify_snapshot "$original" '' ||
+        die 'original installation snapshot is missing or damaged'
     snapshot=$(mktemp -d -- "$history/pre-$action.XXXXXX")
     rmdir "$snapshot"
     remember "$snapshot"
@@ -204,7 +303,7 @@ if [[ $action == rollback || $action == uninstall ]]; then
     else
         modern_password=
     fi
-    restore "$history/original" online || die "could not $action"
+    restore "$original" online || die "could not $action"
     if [[ -n $modern_password ]]; then
         install_atomic "$modern_password" "$etc/admin-password.json" 0600
         systemctl try-restart overseas-cache-admin.service
@@ -214,11 +313,6 @@ if [[ $action == rollback || $action == uninstall ]]; then
     exit 0
 fi
 
-for bin in overseas-admin ws-fanout config-helper; do
-    [[ -x $source_dir/bin/$bin ]] || die 'run from a built V2 release archive (see docs/DEPLOYMENT.md)'
-    "$source_dir/bin/$bin" --version >/dev/null || die "binary $bin cannot run on this host"
-done
-install_recovery_gate
 workspace=$(mktemp -d -- "$history/stage.XXXXXX")
 snapshot=$(mktemp -d -- "$history/before.XXXXXX")
 rmdir "$snapshot"
@@ -349,6 +443,8 @@ cat > "$workspace/logrotate" <<'EOF'
 EOF
 install_atomic "$workspace/logrotate" /etc/logrotate.d/overseas-cache-v2 0644
 systemctl daemon-reload
+nginx -t -q >/dev/null 2>&1 || die 'Nginx validation failed before service activation'
+allow_activation
 systemctl reset-failed ws-fanout.service overseas-cache-admin.service 2>/dev/null || true
 systemctl enable --now ws-fanout.service overseas-cache-config.socket overseas-cache-admin.service >/dev/null
 nginx_reload || die 'Nginx validation or reload failed'

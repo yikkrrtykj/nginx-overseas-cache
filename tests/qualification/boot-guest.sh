@@ -176,7 +176,7 @@ interrupt-install)
     mkdir install-hook
     cat > install-hook/systemctl <<'EOF'
 #!/usr/bin/env bash
-if [[ $1 == daemon-reload ]]; then
+if [[ $1 == daemon-reload && -s /var/lib/overseas-cache-installer/pending-install ]]; then
     printf 'installer process terminated at filesystem-to-systemd boundary\n'
     sync
     kill -KILL "$PPID"
