@@ -4,7 +4,6 @@ set -Eeuo pipefail
 root=$PWD
 ev=$root/artifacts/qualification
 mkdir -p "$ev"
-exec > >(tee "$ev/lab.log") 2>&1
 tmp=$(mktemp -d)
 export no_proxy='*' NO_PROXY='*'
 config=/etc/nginx/overseas-cache
@@ -13,7 +12,10 @@ state=/var/lib/overseas-cache-admin
 history=/var/lib/overseas-cache-installer
 test_password=$(openssl rand -hex 20)
 test_token=$(openssl rand -hex 20)
+# Register the masks before the public evidence log starts.
 printf '::add-mask::%s\n::add-mask::%s\n' "$test_password" "$test_token"
+printf '::add-mask::%s_rotated\n' "$test_password"
+exec > >(tee "$ev/lab.log") 2>&1
 date -u --iso-8601=seconds
 cat /etc/os-release
 uname -a
@@ -420,7 +422,7 @@ QUAL_TOKEN="$test_token" browser maintenance http://127.0.0.1:23000
 
 # Ignore unpublished lab inputs; scan only service journals and emitted logs.
 if (journalctl -u nginx -u ws-fanout -u overseas-cache-admin -u overseas-cache-config -u qual-origin --no-pager;
-    cat /var/log/overseas-cache/traffic.log /var/log/nginx/overseas-cache.access.log) |
+    cat /var/log/overseas-cache/traffic.log /var/log/nginx/overseas-cache.access.log "$ev/lab.log") |
     grep -F -e "$test_password" -e "$test_token" -e 'lab-timing-' -e 'lab-ws-' > /dev/null; then
     touch "$ev/leak-detected"
     echo 'FAIL synthetic secret present in service logs'
