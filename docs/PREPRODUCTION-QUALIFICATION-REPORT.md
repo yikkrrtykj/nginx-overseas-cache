@@ -20,6 +20,19 @@
 
 Ubuntu 24.04 amd64、Ubuntu 26.04 amd64 和 Ubuntu 24.04 原生 arm64 由 GitHub 托管 VM 运行。实验拓扑由独立 VLAN 71、72、73 对应管理、业务、未授权来源，配合回环和只监听管理地址的临时 SSH。合成 HTTPS、CDN 和 WSS 上游绑定在本机地址，名称解析在启动安装前验证。 [测试运行及证据](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46122017404)
 
+```mermaid
+flowchart LR
+  M["管理 VLAN 71"]
+  B["业务 VLAN 72"]
+  U["未授权 VLAN 73"]
+  H["隔离 Ubuntu VM"]
+  O["本机合成 HTTPS、CDN、WSS"]
+  M -->|"SSH 转发到回环，或直连 HTTPS"| H
+  B -->|"业务 TCP 23333，管理 HTTPS 返回 403"| H
+  U -->|"管理 HTTPS 返回 403"| H
+  H -->|"Nginx HTTPS 与 Fanout WSS"| O
+```
+
 | 场景 | 实测结论 |
 |---|---|
 | V1 实际安装、管理 ACL | 管理端登录成功，业务与未授权来源收到 403，业务端能取动态页面 |
@@ -71,7 +84,7 @@ WS 恢复上界取从中断前最后一次成功探针开始到故障后首次�
 
 - [两台来宾机完整回归](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46122474098) · [24.04 原始证据](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46122474098/artifacts/15254183793) · [26.04 原始证据](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46122474098/artifacts/15253863613)
 - [同一 HEAD 的标准 V2 verification](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46122474079)
-- 原候选包在 Ubuntu 24.04 arm64 原生托管 VM 完成在线生命周期。独立修复包的官方镜像重启矩阵为 amd64。
+- 原候选包和独立修复包均在 Ubuntu 24.04 原生 arm64 VM 通过在线全生命周期、管理、浏览器和失败回归。来宾机真实重启矩阵为 amd64。 [独立修复包的原生 arm64 证据](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46123112839/artifacts/15255005696)
 
 ## 验收结论与现场手册
 
