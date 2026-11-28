@@ -34,6 +34,7 @@ async function main() {
       await page.locator('#logout').click();
       await page.waitForURL(base + '/login');
       assert.equal((await context.request.get(base + configPath)).status(), 401);
+      console.log('PASS Chromium login, installed Helper-backed configuration save and logout');
     }
   } finally {
     await browser.close();

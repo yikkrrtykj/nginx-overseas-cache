@@ -309,7 +309,13 @@ apply() {
         --data "{\"originHost\":\"webcoder.atum.live\",\"cdnHost\":\"webcodercdn.atum.live\",\"channelId\":\"$channel\",\"accountId\":\"render\",\"token\":\"$test_token\"}" \
         "$base/api/v2/config")
     printf 'configuration apply %s %s\n' "$channel" "$code"
-    if [[ $expected == yes ]]; then [[ $code == 200 ]]; else [[ $code == 5* ]]; fi
+    if [[ $expected == yes ]]; then
+        [[ $code == 200 ]]
+        python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["ok"] and r["backup"] and r["config"]["tokenPresent"] and "token" not in r["config"]' < "$tmp/apply-response"
+    else
+        [[ $code == 400 || $code == 503 ]]
+        python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["ok"] is False and r["message"] == "配置服务不可用"' < "$tmp/apply-response"
+    fi
 }
 systemctl stop overseas-cache-config.socket overseas-cache-config.service
 apply failed-helper no
