@@ -130,11 +130,19 @@ remember() {
         if systemctl is-active --quiet "$unit" 2>/dev/null; then touch "$directory/$unit.active"; fi
     done
 }
+stop_managed_unit() {
+    local unit=$1 load_state active_state
+    load_state=$(systemctl show --value -p LoadState "$unit") || return 1
+    if [[ $load_state == not-found ]]; then
+        active_state=$(systemctl show --value -p ActiveState "$unit") || return 1
+        [[ $active_state != inactive ]] || return 0
+    fi
+    systemctl stop "$unit"
+}
 stop_v2() {
-    local unit load_state
+    local unit
     for unit in overseas-cache-admin.service overseas-cache-config.socket overseas-cache-config.service ws-fanout.service; do
-        load_state=$(systemctl show --value -p LoadState "$unit") || return 1
-        if [[ $load_state != not-found ]]; then systemctl stop "$unit" || return 1; fi
+        stop_managed_unit "$unit" || return 1
     done
 }
 verify_snapshot() {
@@ -174,7 +182,13 @@ snapshot_digest() (
 )
 restore() {
     local directory=$1 mode=$2 path unit load_state status=0
-    if [[ $mode == online ]]; then stop_v2 || return 1; fi
+    if [[ $mode == online ]]; then
+        stop_v2 || return 1
+    else
+        # A socket has no MainPID. Close the trial listener before restoring
+        # its definition so systemd cannot retain an orphaned socket.
+        stop_managed_unit overseas-cache-config.socket || return 1
+    fi
     for unit in "${units[@]}"; do
         if ! systemctl disable --no-reload "$unit" >/dev/null 2>&1; then
             load_state=$(systemctl show --value -p LoadState "$unit") || return 1

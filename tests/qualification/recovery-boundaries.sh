@@ -29,7 +29,8 @@ cleanup() {
     if mountpoint -q /etc/nginx/conf.d; then umount /etc/nginx/conf.d || true; fi
     if mountpoint -q /usr/sbin/nginx; then umount /usr/sbin/nginx || true; fi
     rm -f /etc/systemd/system/overseas-cache-recovery.service.d/qualification.conf
-    journalctl -b -u "$service" -u nginx -u "$admin" -u "$fanout" --no-pager -n 130 > "$out/systemd.log" || true
+    journalctl -b -u "$service" -u nginx -u "$admin" -u "$fanout" \
+        -u overseas-cache-config.socket -u overseas-cache-config.service --no-pager -n 180 > "$out/systemd.log" || true
     exit "$code"
 }
 trap cleanup EXIT
@@ -106,6 +107,7 @@ positive_v1() {
     systemctl is-active --quiet "$admin"
     systemctl is-active --quiet "$fanout"
     systemctl show -p ExecStart "$admin" | grep -Fq nginx-overseas-cache-admin/server.py
+    [[ ! -S /run/overseas-cache-config.sock ]] || fail 'trial configuration socket survived V1 recovery'
     nginx -t -q
 }
 positive_v2() {
@@ -309,7 +311,7 @@ cp -a "$testdir/snapshot" "$history/$checkpoint"
 printf 'damaged\n' >> "$history/$checkpoint/etc/nginx/overseas-cache/settings.conf"
 reject bash "$fix/scripts/install-admin.sh" recover
 [[ -s $journal ]]
-rm -rf "$history/$checkpoint"
+rm -rf "${history:?}/${checkpoint:?}"
 mv "$testdir/snapshot" "$history/$checkpoint"
 p 'missing and damaged snapshot preserved the journal'
 
@@ -333,7 +335,7 @@ recover_v1
 
 op install
 positive_v2
-case_id=admin-20261128T070000Z-qualification
+case_id='admin-20261128T070000Z-qualification'
 backup=$etc/backups/$case_id
 mkdir -m 0700 "$backup"
 install -m 0600 "$etc/settings.conf" "$backup/settings.conf"
