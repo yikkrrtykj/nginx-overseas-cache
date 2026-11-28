@@ -1,0 +1,55 @@
+name: PR 8 alternative security qualification
+on:
+  push:
+    branches: [codex/pr8-alternative-security-qualification]
+    paths: [.github/workflows/pr8-security-qualification.yml]
+permissions:
+  contents: read
+jobs:
+  shell:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: a1c25a0925cd89b1e50d8d6d7565183a854a2813
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.4'
+      - run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends shellcheck jq
+      - name: Verify exact source and record scanner output
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/pr8-security"
+          evidence=$RUNNER_TEMP/pr8-security
+          {
+            test "$(git rev-parse HEAD)" = 'a1c25a0925cd89b1e50d8d6d7565183a854a2813'
+            test "$(git rev-parse 'HEAD^{tree}')" = '4a3a38dfb2547f980b7f7e0acd53104b1d52ad2e'
+            git rev-parse HEAD 'HEAD^{tree}'
+            bash --version | sed -n '1p'
+            shellcheck --version
+            systemd-analyze --version | sed -n '1p'
+            tar --version | sed -n '1p'
+            go version
+          } | tee "$evidence/versions.txt"
+          scripts=(scripts/install-admin.sh tests/install-linux.sh tests/qualification/boot.sh tests/qualification/boot-guest.sh tests/qualification/recovery-boundaries.sh)
+          for script in "${scripts[@]}"; do
+            bash -n "$script"
+            printf 'bash -n PASS %s\n' "$script"
+          done | tee "$evidence/bash-n.txt"
+          set +e
+          shellcheck --severity=warning --format=json "${scripts[@]}" > "$evidence/shellcheck.json"
+          status=$?
+          set -e
+          [[ $status == 0 || $status == 1 ]]
+          jq -r '.[] | "\(.file):\(.line): \(.level) SC\(.code) \(.message)"' "$evidence/shellcheck.json"
+          shellcheck --severity=error "${scripts[@]}"
+          gofmt -d cmd/config-helper/main_linux.go internal/configstore/store{,_test}.go | tee "$evidence/gofmt.diff"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: shell-security-evidence
+          path: ${{ runner.temp }}/pr8-security/
+          if-no-files-found: error
