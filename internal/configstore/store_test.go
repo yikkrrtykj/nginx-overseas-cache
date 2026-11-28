@@ -72,7 +72,24 @@ func TestReloadFailureAndCrashRecovery(t *testing.T) {
 	if !errors.Is(err, ErrRecoveryFailed) || result.Backup == "" {
 		t.Fatalf("missing recovery journal: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(s.BackupRoot, "pending")); err != nil {
+	configJournal := filepath.Join(s.BackupRoot, "pending")
+	if _, err := os.Stat(configJournal); err != nil {
+		t.Fatal(err)
+	}
+	s.InstallationJournalPath = filepath.Join(s.BackupRoot, "pending-install")
+	if err := os.WriteFile(s.InstallationJournalPath, []byte("fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Recover(t.Context()); !errors.Is(err, ErrInstallationPending) {
+		t.Fatalf("configuration replay started during installation recovery: %v", err)
+	}
+	if _, err := s.Apply(t.Context(), draft()); !errors.Is(err, ErrInstallationPending) {
+		t.Fatalf("configuration write admitted during installation recovery: %v", err)
+	}
+	if _, err := os.Stat(configJournal); err != nil || failures != 2 {
+		t.Fatalf("installation gate touched pending configuration recovery: %v, reloads=%d", err, failures)
+	}
+	if err := os.Remove(s.InstallationJournalPath); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Recover(t.Context()); err != nil {
