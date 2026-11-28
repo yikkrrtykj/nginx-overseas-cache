@@ -16,7 +16,7 @@ import (
 
 type Store struct {
 	UpstreamPath, SettingsPath, BackupRoot, LockPath string
-	InstallationJournalPath                         string
+	InstallationJournalPath                          string
 	Validate, Reload                                 func(context.Context) error
 	ValidateHost                                     func(context.Context, string) error
 	mu                                               sync.Mutex

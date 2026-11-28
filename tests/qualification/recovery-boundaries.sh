@@ -239,9 +239,20 @@ rm "$password"
 runuser -u overseas-admin -- truncate -s 17K "$password"
 reject bash "$fix/scripts/install-admin.sh" rollback
 [[ ! -e $journal ]]
-mv -f "$testdir/known-password" "$password"
+rm "$password"
+runuser -u overseas-admin -- mkdir "$password"
+runuser -u overseas-admin -- touch "$password/qualification-do-not-copy"
+reject bash "$fix/scripts/install-admin.sh" rollback
+[[ ! -e $journal && -z $(find "$history" -name qualification-do-not-copy -print -quit) ]]
+rm "$password/qualification-do-not-copy"
+rmdir "$password"
+runuser -u overseas-admin -- mkfifo "$password"
+reject bash "$fix/scripts/install-admin.sh" rollback
+[[ ! -e $journal ]]
+rm "$password"
+mv "$testdir/known-password" "$password"
 positive_v2
-p 'rollback rejects symlink and oversized Admin password snapshot inputs'
+p 'rollback rejects symlink, oversized, directory and FIFO password inputs without traversing or blocking'
 
 # A corrupt gate package must not replace a valid unit or open a runtime journal.
 cp -a "$fix" "$testdir/bad-gate"

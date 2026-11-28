@@ -100,17 +100,27 @@ valid_captured_password() {
     size=$(stat -c %s -- "$file") || return 1
     (( size <= 16 * 1024 ))
 }
+capture_password() {
+    local directory=$1 archive
+    archive=$(mktemp -- "$directory/.password-archive.XXXXXX")
+    # Archive the leaf without following links or walking a substituted
+    # directory. The private staging archive bounds even a changing file.
+    if ! (ulimit -c 0; ulimit -f 64; tar --no-recursion -cf "$archive" -C / -- "${state_password#/}") ||
+        ! tar -xf "$archive" -C "$directory" ||
+        [[ ! -f $directory$state_password ]] ||
+        ! valid_captured_password "$directory$state_password"; then
+        rm -f -- "$archive"
+        die 'unsafe Admin password record in installation snapshot'
+    fi
+    rm -f -- "$archive"
+}
 remember() {
     local directory=$1 path unit
     mkdir "$directory"
     for path in "${paths[@]}"; do
         if [[ ! -e $path && ! -L $path ]]; then continue; fi
         if [[ $path == "$state_password" ]]; then
-            # Preserve the leaf without following links, then validate only
-            # the captured object inside the root-owned snapshot.
-            (ulimit -c 0; ulimit -f 32; cp -a --parents -- "$path" "$directory") &&
-                valid_captured_password "$directory$path" ||
-                die 'unsafe Admin password record in installation snapshot'
+            capture_password "$directory"
         else
             cp -a --parents -- "$path" "$directory"
         fi
