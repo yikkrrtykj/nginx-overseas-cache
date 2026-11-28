@@ -24,6 +24,8 @@ def http(_ws, request):
         body = json.dumps({"active": len(active), "connections": sum(active.values())}).encode()
     else:
         body = f"qualified HTTPS sample {count}".encode()
+        if path == "/render":
+            body += b'<link href="https://webcodercdn.atum.live/templates/qualification.woff2">'
     content_type = "text/html" if path == "/render" else "application/octet-stream"
     return Response(HTTPStatus.OK, "OK", Headers([
         ("Content-Type", content_type), ("Content-Length", str(len(body))),

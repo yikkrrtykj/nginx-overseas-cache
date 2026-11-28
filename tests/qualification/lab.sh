@@ -416,6 +416,7 @@ umount "$history"
 grep -q 'No space left on device' "$ev/fault-enospc.log"
 healthy
 echo 'PASS ENOSPC in installer staging did not alter confirmed runtime'
+QUAL_TOKEN="$test_token" browser maintenance http://127.0.0.1:23000
 
 # Ignore unpublished lab inputs; scan only service journals and emitted logs.
 if (journalctl -u nginx -u ws-fanout -u overseas-cache-admin -u overseas-cache-config -u qual-origin --no-pager;
