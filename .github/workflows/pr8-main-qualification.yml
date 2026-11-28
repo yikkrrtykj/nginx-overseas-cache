@@ -1,0 +1,156 @@
+name: Verify exact PR 8 merge and release candidate
+on:
+  push:
+    branches: [codex/pr8-alternative-security-qualification]
+    paths: [.github/workflows/pr8-main-qualification.yml]
+permissions:
+  contents: read
+env:
+  EXPECTED_MAIN: fb3d2820b18c6b95c4bb439ded7cac62a26bec30
+  EXPECTED_TREE: 80f07ab40058ebf66c5a2c5c4fd3000c0a6462bb
+jobs:
+  dispatch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 7
+    permissions:
+      contents: read
+      actions: write
+    outputs:
+      run: ${{ steps.dispatch.outputs.run }}
+    steps:
+      - name: Dispatch the standard workflow for the verified main commit
+        id: dispatch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          actual=$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq '.commit.sha')
+          test "$actual" = "$EXPECTED_MAIN"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$actual" --jq '.tree.sha')" = "$EXPECTED_TREE"
+          gh workflow run v2.yml --repo "$GITHUB_REPOSITORY" --ref main
+          for attempt in {1..45}; do
+            run=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/v2.yml/runs" \
+              -f event=workflow_dispatch -f branch=main -f head_sha="$EXPECTED_MAIN" \
+              --jq '.workflow_runs[0].id // empty')
+            if [[ $run =~ ^[0-9]+$ ]]; then
+              printf 'Standard main run %s for %s\n' "$run" "$EXPECTED_MAIN"
+              printf 'run=%s\n' "$run" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 3
+          done
+          exit 1
+  archive:
+    needs: dispatch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+    outputs:
+      artifact: ${{ steps.wait.outputs.artifact }}
+    steps:
+      - name: Bind the candidate artifact to exact main
+        id: wait
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ needs.dispatch.outputs.run }}
+        run: |
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" --jq '.head_sha')" = "$EXPECTED_MAIN"
+          for attempt in {1..110}; do
+            artifact=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts" \
+              --jq '[.artifacts[] | select(.name == "linux-release" and (.expired | not))][0].id // empty')
+            if [[ $artifact =~ ^[0-9]+$ ]]; then
+              gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact" \
+                --jq '[.id,.digest,.workflow_run.id,.workflow_run.head_sha] | @tsv'
+              printf 'artifact=%s\n' "$artifact" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 5
+          done
+          exit 1
+  verify:
+    needs: [dispatch, archive]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: amd64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: fb3d2820b18c6b95c4bb439ded7cac62a26bec30
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.dispatch.outputs.run }}
+          artifact-ids: ${{ needs.archive.outputs.artifact }}
+          path: new-release
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          github-token: ${{ github.token }}
+          run-id: 46158042197
+          artifact-ids: '15268392894'
+          path: reviewed-release
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          github-token: ${{ github.token }}
+          run-id: 46076576495
+          artifact-ids: '15236030131'
+          path: historical-release
+      - name: Verify SHA256, native versions, licenses and source equivalence
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p evidence
+          exec > >(tee evidence/verification.txt) 2>&1
+          test "$(git rev-parse HEAD)" = "$EXPECTED_MAIN"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$EXPECTED_TREE"
+          test "$(dpkg --print-architecture)" = "$ARCH"
+          git rev-parse HEAD 'HEAD^{tree}'
+          uname -m
+          for scope in new reviewed historical; do
+            (cd "$scope-release" && sha256sum --check --strict SHA256SUMS && cat SHA256SUMS)
+            mkdir "$scope-files"
+            tar -xzf "$(find "$scope-release" -maxdepth 1 -name "*-linux-$ARCH.tar.gz")" \
+              --strip-components=1 -C "$scope-files"
+          done
+          for item in README.md scripts/install-admin.sh scripts/install-ws-fanout.sh scripts/change-upstreams.sh; do
+            cmp "$item" "new-files/$item"
+          done
+          cmp docs/DEPLOYMENT.md new-files/DEPLOYMENT.md
+          cmp docs/SECURITY.md new-files/SECURITY.md
+          diff -qr nginx new-files/nginx
+          diff -qr systemd new-files/systemd
+          diff -qr --exclude=bin reviewed-files new-files
+          for license in go-runtime.txt gorilla-websocket.txt x-net.txt x-net-patents.txt x-text.txt x-text-patents.txt; do
+            test -s "new-files/licenses/$license"
+          done
+          for binary in overseas-admin ws-fanout config-helper; do
+            version=$("new-files/bin/$binary" --version 2>&1)
+            test "$version" = "${EXPECTED_MAIN:0:12}"
+            test "$("reviewed-files/bin/$binary" --version 2>&1)" = 381e1c1c396c
+            if cmp -s "reviewed-files/bin/$binary" "new-files/bin/$binary"; then exit 1; fi
+            printf '%s %s\n' "$binary" "$version"
+          done
+          status=0
+          diff -qr --exclude=bin historical-files new-files > evidence/historical-file-differences.txt || status=$?
+          test "$status" -eq 1
+          cat evidence/historical-file-differences.txt
+          printf 'PASS %s native release verification and reviewed source equivalence\n' "$ARCH"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: main-release-verification-${{ matrix.arch }}
+          path: evidence/
+          if-no-files-found: error
