@@ -24,9 +24,26 @@ jobs:
       - uses: actions/download-artifact@v7
         with:
           github-token: ${{ github.token }}
-          run-id: 46122474079
-          name: linux-release
+          run-id: 46125109307
+          artifact-ids: '15255552073'
           path: dist
+      - uses: actions/download-artifact@v7
+        with:
+          github-token: ${{ github.token }}
+          run-id: 46122474079
+          artifact-ids: '15254252857'
+          path: prior-dist
+      - uses: actions/download-artifact@v7
+        with:
+          github-token: ${{ github.token }}
+          run-id: 46076576495
+          artifact-ids: '15236030131'
+          path: original-dist
+      - name: Verify release checksums and record provenance
+        run: |
+          for directory in dist prior-dist original-dist; do
+            (cd "$directory" && sha256sum --check --strict SHA256SUMS && cat SHA256SUMS)
+          done
       - run: |
           sudo apt-get update
           sudo apt-get install -y nginx python3-venv openssh-server
