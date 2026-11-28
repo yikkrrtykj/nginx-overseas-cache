@@ -15,7 +15,7 @@ trap cleanup EXIT
 diagnostics() {
     local at=$1
     printf 'Installation fixture failed at line %s\n' "$at"
-    sudo journalctl -u nginx -u overseas-cache-config -u overseas-cache-admin --no-pager -n 50 || true
+    sudo journalctl -u nginx -u overseas-cache-recovery -u overseas-cache-config -u overseas-cache-admin --no-pager -n 50 || true
     sudo journalctl -k --no-pager -n 20 --grep 'apparmor="DENIED"' || true
     sudo tail -n 15 /var/log/overseas-cache/traffic.log || true
     sudo namei -l /var/cache/nginx/web_cache || true

@@ -4,28 +4,24 @@ on:
     paths:
       - 'cmd/config-helper/**'
       - 'internal/configstore/**'
+      - 'internal/atomicfile/**'
       - 'scripts/**'
       - 'systemd/**'
       - 'tests/qualification/**'
       - '.github/workflows/deployment-recovery.yml'
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: deployment-recovery-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 jobs:
-  reboot:
+  candidate:
     runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        release: ['24.04', '26.04']
-    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@v6
         with:
@@ -39,10 +35,33 @@ jobs:
         run: |
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           git rev-parse HEAD 'HEAD^{tree}'
-          bash -n scripts/install-admin.sh
+          for script in scripts/install-admin.sh tests/qualification/{boot,boot-guest,recovery-boundaries}.sh; do bash -n "$script"; done
           go test ./internal/configstore ./cmd/config-helper
           bash scripts/build-release.sh
-      - run: bash -n tests/qualification/boot.sh && bash -n tests/qualification/boot-guest.sh
+          ( cd dist && sha256sum --check SHA256SUMS )
+      - uses: actions/upload-artifact@v6
+        with:
+          name: recovery-linux-release
+          path: dist/
+          if-no-files-found: error
+  reboot:
+    needs: candidate
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ['24.04', '26.04']
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v7
+        with:
+          name: recovery-linux-release
+          path: dist
       - run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils ovmf ubuntu-cloudimage-keyring
@@ -52,4 +71,35 @@ jobs:
         with:
           name: reboot-${{ matrix.release }}
           path: artifacts/boot/
+          if-no-files-found: error
+  same-boot:
+    needs: candidate
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-26.04, ubuntu-24.04-arm]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v7
+        with:
+          name: recovery-linux-release
+          path: dist
+      - uses: actions/download-artifact@v7
+        with:
+          github-token: ${{ github.token }}
+          run-id: 46122474079
+          name: linux-release
+          path: prior-dist
+      - run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT bash tests/qualification/recovery-boundaries.sh
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: recovery-boundaries-${{ matrix.os }}
+          path: artifacts/recovery-boundaries/
           if-no-files-found: error

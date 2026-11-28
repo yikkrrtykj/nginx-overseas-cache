@@ -109,6 +109,13 @@ run pending-config
 reboot_guest
 run check-pending-config
 run interrupt-install
+run interrupt-recovery
+reboot_guest
+run check-interrupt
+run committed-rollback
+reboot_guest
+run check-interrupt
+run committed-uninstall
 reboot_guest
 run check-interrupt
 [[ ${normal_failed:-0} == 0 ]]

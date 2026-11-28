@@ -197,6 +197,35 @@ EOF
     systemctl show -p ExecStart overseas-cache-admin | grep -q nginx-overseas-cache-admin/server.py
     grep -q /opt/overseas-cache-v2/bin/overseas-admin /etc/systemd/system/overseas-cache-admin.service
     ;;
+interrupt-recovery)
+    mkdir -p recovery-hook
+    cat > recovery-hook/cp <<'RECOVER'
+#!/usr/bin/env bash
+/usr/bin/cp "$@"
+if [[ ${!#} == /etc/nginx/conf.d/proxy-cache.conf ]]; then
+    sync
+    kill -KILL "$PPID"
+    exit 137
+fi
+RECOVER
+    chmod +x recovery-hook/cp
+    code=0
+    if PATH=/home/qualification/recovery-hook:$PATH product_install recover; then
+        echo 'Recovery unexpectedly completed'
+    else
+        code=$?
+    fi
+    [[ $code == 137 && -s $history/pending-install ]]
+    echo 'Interrupted an actual restoration after its first copy, while the journal remained'
+    ;;
+committed-rollback)
+    product_install
+    product_install rollback
+    ;;
+committed-uninstall)
+    product_install
+    product_install uninstall
+    ;;
 check-interrupt)
     local_login http://127.0.0.1:23000
     if systemctl show -p ExecStart overseas-cache-admin | grep -q nginx-overseas-cache-admin/server.py; then
@@ -208,6 +237,10 @@ check-interrupt)
     [[ $(target_channel) == qualification-boot ]]
     journalctl -b -u overseas-cache-recovery.service --no-pager
     [[ ! -e "$history/pending-install" ]]
+    for component in /usr/local/lib/overseas-cache/install-admin.sh /etc/systemd/system/overseas-cache-recovery.service \
+        /etc/systemd/system/{nginx,ws-fanout,overseas-cache-admin}.service.d/overseas-cache-recovery.conf; do
+        [[ -f $component ]]
+    done
     [[ ! -e /home/qualification/install-boot-failed && ! -e /home/qualification/config-boot-failed ]]
     ;;
 *) exit 2 ;;
