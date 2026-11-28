@@ -365,5 +365,50 @@ positive_v1
 for component in "$gate" /usr/local/lib/overseas-cache/config-helper "/etc/systemd/system/$service" /etc/systemd/system/{nginx,overseas-cache-admin,ws-fanout}.service.d/overseas-cache-recovery.conf; do
     [[ -f $component ]]
 done
+# Recreate the format of an unsealed original snapshot written by an
+# older V2 installer when the V1 site carried its renderer settings inline.
+legacy_original=$history/original
+site=/etc/nginx/sites-available/overseas-cache
+legacy_site=$testdir/legacy-original$site
+legacy_settings=$testdir/legacy-original$etc/settings.conf
+cp -a -- "$(realpath -e -- "$legacy_original")" "$testdir/legacy-original"
+awk '
+    FNR == NR { renderer = renderer $0 "\n"; next }
+    $1 == "include" && $2 == "/etc/nginx/overseas-cache/settings.conf;" {
+        printf "%s", renderer
+        next
+    }
+    { print }
+' "$legacy_settings" "$legacy_site" > "$testdir/inline-site"
+mv -- "$testdir/inline-site" "$legacy_site"
+rm -f -- "$testdir/legacy-original/.sha256" "$legacy_settings"
+mv -- "$legacy_original" "$testdir/modern-original"
+mv -- "$testdir/legacy-original" "$legacy_original"
+legacy_site=$legacy_original$site
+
+op install
+positive_v2
+cp -a -- "$legacy_site" "$testdir/verified-inline-site"
+sed -i '/^[[:space:]]*set[[:space:]]*\$render_token[[:space:]]/d' "$legacy_site"
+reject bash "$fix/scripts/install-admin.sh" rollback
+positive_v2
+mv -- "$testdir/verified-inline-site" "$legacy_site"
+p 'unsealed original missing a renderer directive is rejected before restoration'
+
+for operation in rollback uninstall; do
+    op "$operation"
+    positive_v1
+    [[ ! -e $etc/settings.conf ]]
+    cmp "$legacy_site" "$site"
+    curl --noproxy '*' -fsS --max-time 5 -D - -o /dev/null http://127.0.0.1:23333/ |
+        awk 'tolower($1) == "location:" && $0 ~ /[?&]channelId=qualification-boot([&[:space:]]|$)/ {found=1}
+             END {exit !found}'
+    p "$operation restored unsealed V1 with inline renderer settings"
+    if [[ $operation == rollback ]]; then
+        op install
+        positive_v2
+    fi
+done
+
 [[ $(cat /proc/sys/kernel/random/boot_id) == "$boot" ]]
 p 'uninstall retained inert recovery components and V1 in the same boot'

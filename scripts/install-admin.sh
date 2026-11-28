@@ -145,6 +145,16 @@ stop_v2() {
         stop_managed_unit "$unit" || return 1
     done
 }
+read_legacy_renderer_settings() {
+    awk '
+        /^[ \t]*set[ \t]+\$render_(channel|account|token)[ \t]+/ {
+            if (++seen[$2] > 1) exit 1
+            print
+            count++
+        }
+        END { if (count != 3) exit 1 }
+    ' "$1"
+}
 verify_snapshot() {
     local directory=$1 expected=$2 actual
     [[ -d $directory && ! -L $directory ]] || return 1
@@ -161,7 +171,13 @@ verify_snapshot() {
         # Previously shipped snapshots have no checksum. Validate the
         # essential dependencies implied by the saved service files.
         if [[ -e $directory$site || -L $directory$enabled ]]; then
-            [[ -s $directory$site && -s $directory$upstream && -s $directory$etc/settings.conf ]] || return 1
+            [[ -s $directory$site && -s $directory$upstream ]] || return 1
+            local settings=$directory$etc/settings.conf
+            if [[ -e $settings || -L $settings ]]; then
+                [[ -s $settings ]] || return 1
+            else
+                read_legacy_renderer_settings "$directory$site" >/dev/null || return 1
+            fi
         fi
         if grep -qsF "$app/bin/" "$directory/etc/systemd/system/overseas-cache-admin.service"; then
             [[ -x $directory$app/bin/overseas-admin && -x $directory$app/bin/ws-fanout &&
@@ -397,8 +413,7 @@ install -m 0600 /dev/null "$workspace/settings"
 if [[ -f $etc/settings.conf ]]; then
     cp "$etc/settings.conf" "$workspace/settings"
 elif [[ -f $site ]]; then
-    awk '/^[ \t]*set[ \t]+\$render_(channel|account|token)[ \t]+/ { print; count++ }
-         END { if (count != 3) exit 1 }' "$site" > "$workspace/settings" ||
+    read_legacy_renderer_settings "$site" > "$workspace/settings" ||
         die 'old renderer settings could not be migrated'
 else
     cp "$source_dir/nginx/settings.conf.example" "$workspace/settings"
