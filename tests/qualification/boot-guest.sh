@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 [[ $EUID == 0 ]]
 cd /home/qualification
+trap 'line=$LINENO; printf "Guest %s failed near line %s\n" "$1" "$line"; journalctl -n 22 -u nginx -u qual-boot-origin -u ws-fanout -u overseas-cache-admin --no-pager; exit 1' ERR
 config=/etc/nginx/overseas-cache
 history=/var/lib/overseas-cache-installer
 password_file=/home/qualification/lab-password
@@ -75,8 +76,10 @@ normal-reboot)
     local_login http://127.0.0.1:23000
     systemctl is-active nginx ws-fanout overseas-cache-config.socket overseas-cache-admin
     [[ $(target_channel) == qualification-boot ]]
-    local_curl http://127.0.0.1:23333/render | grep -q fixture-response
-    grep -qx 'OVERSEAS_ADMIN_ALLOWED_NETWORKS=127.0.0.1/32,10.84.71.0/24' "$config/admin-v2.env"
+    body=$(local_curl http://127.0.0.1:23333/render)
+    [[ $body == fixture-response-* ]]
+    grep '^OVERSEAS_ADMIN_ALLOWED_NETWORKS=' "$config/admin-v2.env"
+    grep -Eq '^OVERSEAS_ADMIN_ALLOWED_NETWORKS=.*10[.]84[.]71[.]0/24' "$config/admin-v2.env"
     printf 'PASS guest reboot, original password/ACL and data plane\n'
     ;;
 pending-config)

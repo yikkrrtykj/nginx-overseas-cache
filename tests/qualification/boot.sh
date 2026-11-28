@@ -98,10 +98,11 @@ run() {
 }
 run provision
 reboot_guest
-run normal-reboot
+run normal-reboot || normal_failed=1
 run pending-config
 reboot_guest
 run check-pending-config
 run interrupt-install
 reboot_guest
 run check-interrupt
+[[ ${normal_failed:-0} == 0 ]]
