@@ -5,12 +5,15 @@ umask 077
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 [[ $EUID == 0 ]] || die 'run as root'
 action=${1:-install}
-case $action in install|rollback|uninstall) ;; *) die 'usage: install-admin.sh [install|rollback|uninstall]';; esac
+case $action in install|rollback|uninstall|recover-before-start) ;; *) die 'usage: install-admin.sh [install|rollback|uninstall]';; esac
 source_dir=$(cd -- "$(dirname -- "$0")/.." && pwd)
 app=/opt/overseas-cache-v2
 etc=/etc/nginx/overseas-cache
 state=/var/lib/overseas-cache-admin
 history=/var/lib/overseas-cache-installer
+journal=$history/pending-install
+in_progress=/run/overseas-cache-installer.active
+recovery_dir=/usr/local/lib/overseas-cache
 upstream=/etc/nginx/conf.d/proxy-cache.conf
 site=/etc/nginx/sites-available/overseas-cache
 enabled=/etc/nginx/sites-enabled/overseas-cache
@@ -33,7 +36,14 @@ fi
 mkdir -p "$history" "$etc" "$etc/backups"
 chmod 700 "$history" "$etc" "$etc/backups"
 exec 8>"$history/install.lock"
-flock -w 30 8 || die 'another installer is running'
+if [[ $action == recover-before-start ]]; then
+    if ! flock -n 8; then
+        [[ -e $in_progress ]] && exit 0
+        die 'recovery could not acquire the installation lock'
+    fi
+else
+    flock -w 30 8 || die 'another installer is running'
+fi
 touch "$lock" "$legacy_lock"
 chmod 600 "$lock" "$legacy_lock"
 exec 7<>"$legacy_lock"
@@ -65,22 +75,121 @@ stop_v2() {
     systemctl stop overseas-cache-admin.service overseas-cache-config.socket overseas-cache-config.service ws-fanout.service 2>/dev/null || true
 }
 restore() {
-    local directory=$1 path unit status=0
-    stop_v2
-    for unit in "${units[@]}"; do systemctl disable "$unit" >/dev/null 2>&1 || true; done
+    local directory=$1 mode=$2 path unit status=0
+    if [[ $mode == online ]]; then stop_v2; fi
+    for unit in "${units[@]}"; do systemctl disable --no-reload "$unit" >/dev/null 2>&1 || true; done
     for path in "${paths[@]}"; do
         rm -rf -- "$path" || status=1
         if [[ -e $directory$path || -L $directory$path ]]; then
             mkdir -p "$(dirname "$path")" && cp -a -- "$directory$path" "$path" || status=1
         fi
     done
+    for unit in "${units[@]}"; do
+        if [[ -f $directory/$unit.enabled ]]; then systemctl enable --no-reload "$unit" >/dev/null || status=1; fi
+    done
     systemctl daemon-reload || status=1
     for unit in overseas-cache-config.socket overseas-cache-config.service ws-fanout.service overseas-cache-admin.service; do
-        if [[ -f $directory/$unit.enabled ]]; then systemctl enable "$unit" >/dev/null || status=1; fi
-        if [[ -f $directory/$unit.active ]]; then systemctl start "$unit" || status=1; fi
+        if [[ -f $directory/$unit.active ]]; then
+            if [[ $mode == boot ]]; then
+                # The restored jobs can depend on this recovery unit.
+                systemctl --no-block start "$unit" || status=1
+            else
+                systemctl start "$unit" || status=1
+            fi
+        fi
     done
-    nginx_reload || status=1
+    if [[ $mode == boot ]]; then
+        nginx -t -q >/dev/null 2>&1 || status=1
+    elif systemctl is-active --quiet nginx; then
+        nginx_reload || status=1
+    else
+        systemctl start nginx || status=1
+    fi
     return "$status"
+}
+
+record_pending() {
+    local directory=$1 temporary
+    temporary=$(mktemp -- "$history/.pending.XXXXXX")
+    printf '%s\n' "$(basename "$directory")" > "$temporary"
+    mv -fT -- "$temporary" "$journal"
+    # Persist the snapshot and record before replacing any active files.
+    sync
+}
+finish_pending() {
+    # Persist state across /etc, /opt and /var before removing the marker.
+    sync || return 1
+    rm -f -- "$journal" || return 1
+    sync -f "$history"
+}
+recover_install() {
+    local mode=$1 snapshot_name
+    IFS= read -r snapshot_name < "$journal" || die 'cannot read pending installation snapshot'
+    [[ $snapshot_name =~ ^(before|pre-rollback|pre-uninstall)\.[A-Za-z0-9]{6}$ ]] ||
+        die 'invalid pending installation snapshot name'
+    [[ -d $history/$snapshot_name && ! -L $history/$snapshot_name ]] ||
+        die 'pending installation snapshot is missing'
+    restore "$history/$snapshot_name" "$mode" || die 'pending installation restore failed'
+    finish_pending
+    printf 'Recovered interrupted installation from %s.\n' "$snapshot_name"
+}
+recover_config() {
+    local option=$1
+    [[ -e $etc/backups/pending ]] || return 0
+    [[ -x $app/bin/config-helper ]] || die 'recover the interrupted configuration transaction before continuing'
+    flock -u 9
+    "$app/bin/config-helper" "$option"
+    flock -w 85 9 || die 'configuration lock is busy'
+}
+
+if [[ $action == recover-before-start ]]; then
+    mode=boot
+    if systemctl is-active --quiet nginx; then mode=online; fi
+    if [[ -e $journal ]]; then
+        [[ $mode == boot ]] || die 'interrupted installation requires recovery before services start'
+        recover_install boot
+    fi
+    if [[ $mode == boot ]]; then recover_config --recover-before-nginx; else recover_config --recover; fi
+    exit 0
+fi
+
+# Avoid reentering the installer when its systemd jobs start services.
+# Reboot clears this runtime marker. The install lock serializes retries.
+touch "$in_progress"
+workspace=
+snapshot=
+rollback_install() {
+    local code=$?
+    trap - EXIT
+    if [[ -n $workspace ]]; then rm -rf -- "$workspace" || true; fi
+    if (( code != 0 )) && [[ -n $snapshot && -e $journal ]]; then
+        if restore "$snapshot" online && finish_pending; then
+            printf 'Install failed. Previous installation restored.\n' >&2
+        else
+            printf 'Install failed. Automatic recovery incomplete. Snapshot %s\n' "$snapshot" >&2
+        fi
+    fi
+    rm -f -- "$in_progress" || true
+    exit "$code"
+}
+trap rollback_install EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+if [[ -e $journal ]]; then recover_install online; fi
+recover_config --recover
+
+install_recovery_gate() {
+    local unit drop_in
+    install -d -m 0755 "$recovery_dir"
+    install_atomic "$source_dir/scripts/install-admin.sh" "$recovery_dir/install-admin.sh" 0755
+    install_atomic "$source_dir/systemd/v2/overseas-cache-recovery.service" \
+        /etc/systemd/system/overseas-cache-recovery.service 0644
+    for unit in nginx.service overseas-cache-admin.service ws-fanout.service; do
+        drop_in=/etc/systemd/system/$unit.d
+        install -d -m 0755 "$drop_in"
+        install_atomic "$source_dir/systemd/v2/recovery.conf" "$drop_in/overseas-cache-recovery.conf" 0644
+    done
 }
 
 if [[ $action == rollback || $action == uninstall ]]; then
@@ -88,19 +197,18 @@ if [[ $action == rollback || $action == uninstall ]]; then
     snapshot=$(mktemp -d -- "$history/pre-$action.XXXXXX")
     rmdir "$snapshot"
     remember "$snapshot"
+    record_pending "$snapshot"
     if [[ -f $state/admin-password.json && -f $history/original/etc/systemd/system/overseas-cache-admin.service ]]; then
         modern_password=$snapshot$state/admin-password.json
     else
         modern_password=
     fi
-    if ! restore "$history/original"; then
-        restore "$snapshot" || die 'could not restore either installation; inspect installation snapshots'
-        die "could not $action; prior installation restored"
-    fi
+    restore "$history/original" online || die "could not $action"
     if [[ -n $modern_password ]]; then
         install_atomic "$modern_password" "$etc/admin-password.json" 0600
         systemctl try-restart overseas-cache-admin.service
     fi
+    finish_pending
     printf '%s complete; previous V2 snapshot: %s\n' "$action" "$snapshot"
     exit 0
 fi
@@ -109,31 +217,12 @@ for bin in overseas-admin ws-fanout config-helper; do
     [[ -x $source_dir/bin/$bin ]] || die 'run from a built V2 release archive (see docs/DEPLOYMENT.md)'
     "$source_dir/bin/$bin" --version >/dev/null || die "binary $bin cannot run on this host"
 done
-if [[ -e $etc/backups/pending ]]; then
-    [[ -x $app/bin/config-helper ]] || die 'recover the interrupted configuration transaction before upgrading'
-    flock -u 9
-    "$app/bin/config-helper" --recover
-    flock -w 85 9 || die 'configuration lock is busy'
-fi
-
+install_recovery_gate
 workspace=$(mktemp -d -- "$history/stage.XXXXXX")
 snapshot=$(mktemp -d -- "$history/before.XXXXXX")
 rmdir "$snapshot"
 remember "$snapshot"
-rollback_install() {
-    local code=$?
-    trap - EXIT
-    rm -rf -- "$workspace"
-    if (( code != 0 )); then
-        if restore "$snapshot"; then printf 'Install failed. Previous installation restored.\n' >&2
-        else printf 'Install failed. Automatic recovery incomplete. Snapshot %s\n' "$snapshot" >&2
-        fi
-    fi
-    exit "$code"
-}
-trap rollback_install EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
+record_pending "$snapshot"
 
 for account in overseas-admin overseas-fanout; do
     if ! id "$account" >/dev/null 2>&1; then
@@ -270,5 +359,6 @@ if command -v curl >/dev/null; then
             --max-time 2 http://127.0.0.1:23000/login >/dev/null
     fi
 fi
-if [[ ! -e $history/original ]]; then mv -T -- "$snapshot" "$history/original"; fi
+if [[ ! -e $history/original ]]; then ln -s -- "$(basename "$snapshot")" "$history/original"; fi
+finish_pending
 printf 'V2 installed. Management defaults to http://127.0.0.1:23000.\n'
