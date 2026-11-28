@@ -1,0 +1,29 @@
+name: Confirm same-boot baseline
+on:
+  push:
+    branches: [codex/pr8-same-boot-baseline]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  systemd:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v7
+        with:
+          run-id: 46122474079
+          github-token: ${{ github.token }}
+          name: linux-release
+          path: dist
+      - run: bash tests/qualification/same-boot-baseline.sh
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: same-boot-baseline
+          path: artifacts/same-boot/
+          if-no-files-found: error
