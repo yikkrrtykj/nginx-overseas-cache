@@ -1,6 +1,12 @@
 # Overseas Cache V2 现场验收待执行清单
 
-适用工作：[真实 Renderer #4](https://github.com/yikkrrtykj/nginx-overseas-cache/issues/4)、[管理入口 #6](https://github.com/yikkrrtykj/nginx-overseas-cache/issues/6)、[升级回滚 #7](https://github.com/yikkrrtykj/nginx-overseas-cache/issues/7)。现有候选包绑定 main `8eaeb2aa8d8b6552fc5abe7aaf04581678814a88`、Tree `23e87b4542caf050dfd2fe4dc64049485983bf89`。当前 PRODUCTION HOLD。
+适用工作：[真实 Renderer #4](https://github.com/yikkrrtykj/nginx-overseas-cache/issues/4)、[管理入口 #6](https://github.com/yikkrrtykj/nginx-overseas-cache/issues/6)、[升级回滚 #7](https://github.com/yikkrrtykj/nginx-overseas-cache/issues/7)。当前 **PRODUCTION HOLD**。现场验收须另行授权。
+
+## 候选包与授权
+
+- [PR #8](https://github.com/yikkrrtykj/nginx-overseas-cache/pull/8) 的隔离验证已通过。已验证的 PR HEAD 为 `b1b8c448b47681732117f3e8069c3ae3f2fb35d9`，Tree 为 `8d9a37de9f3faed6556dca8d32043ad6f4bf5203`。合并仍受独立 Security Review 门禁约束。[标准 CI](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46125109307) · [恢复 CI](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46125109300) · [原生 arm64](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46125778125)
+- 当前待登记正式的现场验收候选 Artifact。合并后使用精确 main 的标准 CI 构建，登记 main SHA、Tree、Artifact ID、ZIP digest、对应架构 tar.gz SHA256 和三个二进制版本。待候选包登记并获得现场授权后启动下列步骤。
+- 原 main `8eaeb2aa8d8b6552fc5abe7aaf04581678814a88` 及旧 PR `63a39bfe5a920553633defc834f91af422f0d0dd` 的包只作历史追溯。最终 PR [Artifact 15255552073](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46125109307/artifacts/15255552073) 保留为隔离验证证据。
 
 ## 开始前填写
 
@@ -38,3 +44,9 @@
 4. 分别以有效 HTTP 响应、`join_res` 与正确消息、真实可更新画面界定恢复。记录安装器耗时和业务恢复上下界。判断持续异常、管理失联、错误配置生效或超阈值，并根据事前授权回滚。
 5. 运行获批候选包的 `sudo bash scripts/install-admin.sh rollback`，复验 V1 管理入口、ACL、最新有效密码、原配置、缓存与业务。记录恢复耗时。脚本恢复异常时调用事先验证的 VM 快照路径，保留日志。
 6. 签署 #4、#6 和 #7 状态，附上选用版本、窗口、测试矩阵、脱敏证据、验证人及生产操作是否另获批准。当前没有真实 Renderer、现场网段或生产发布验证。
+
+## 安装或配置变更中断后的恢复
+
+1. 暂停后续配置写入、重复切换和服务启动。观察 `journalctl -u overseas-cache-recovery.service` 以及 `nginx.service`、`overseas-cache-admin.service`、`ws-fanout.service` 的状态。保留 `/var/lib/overseas-cache-installer/pending-install`、`/etc/nginx/overseas-cache/backups/pending`、`original` 链接及相关快照。证据仅记录日志和快照标识，按现场要求脱敏。
+2. 如果同一开机周期内仍有受管进程运行，门禁可能阻断启动以避免 systemd 等待环。在已批准的恢复窗口，从已验证且获批的包目录执行 `sudo bash scripts/install-admin.sh recover`。处理磁盘不足、损坏快照、配置校验或 systemd 错误后，先保留证据，再按部署手册重试或走已验证的 VM 快照回退路径。
+3. 恢复后确认待恢复记录清除，执行 `sudo nginx -t`，核对 Nginx、Admin、Fanout 及对应版本的 Helper socket，复验认证、ACL、缓存、WebSocket 和画面。V1 回滚及 V2 卸载保留门禁，以便恢复中断的事务。清理步骤见[部署手册](https://github.com/yikkrrtykj/nginx-overseas-cache/blob/b1b8c448b47681732117f3e8069c3ae3f2fb35d9/docs/DEPLOYMENT.md#recovery-gate-and-its-lifecycle)。
