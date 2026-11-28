@@ -21,19 +21,19 @@ cat /etc/os-release
 uname -a
 systemctl --version | head -n 1
 printf 'workflow %s\n' "$(git rev-parse HEAD)"
-git rev-parse 4d7bbe0084ab6adfa95d61d895e0ad57c4c4cfbe^{tree} | tee "$ev/tree.txt"
-grep -qx 978f23131ef79291cc2c983e70f554335b55b6bc "$ev/tree.txt"
+git rev-parse 01746cc861e1151fd8530ef0e8adb85fb5892525^{tree} | tee "$ev/tree.txt"
+grep -qx fda8ff30da6d79a2fe6c629a4c641cc507ed905f "$ev/tree.txt"
 [[ $(dpkg --print-architecture) == arm64 ]]
 ( cd dist; sha256sum -c SHA256SUMS ) | tee "$ev/archive-checksums.txt"
 arch=$(dpkg --print-architecture)
-archive=$root/dist/nginx-overseas-cache-4d7bbe0084ab-linux-$arch.tar.gz
+archive=$root/dist/nginx-overseas-cache-01746cc861e1-linux-$arch.tar.gz
 tar -xzf "$archive" -C "$tmp"
 package=$(find "$tmp" -mindepth 1 -maxdepth 1 -type d -name 'nginx-overseas-cache-*')
 find "$package/licenses" -type f -printf '%f\n' | sort | tee "$ev/licenses.txt"
 for binary in overseas-admin ws-fanout config-helper; do
     "$package/bin/$binary" --version 2>&1 | tee -a "$ev/build-version.txt"
 done
-[[ $(grep -c '4d7bbe0084ab' "$ev/build-version.txt") == 3 ]]
+[[ $(grep -c '01746cc861e1' "$ev/build-version.txt") == 3 ]]
 
 ns_ip() { ip netns exec "$@"; }
 capture() {
@@ -432,7 +432,7 @@ done
 installer
 healthy
 for binary in overseas-admin ws-fanout config-helper; do
-    [[ $(/opt/overseas-cache-v2/bin/"$binary" --version 2>&1) == 4d7bbe0084ab ]]
+    [[ $(/opt/overseas-cache-v2/bin/"$binary" --version 2>&1) == 01746cc861e1 ]]
     /opt/overseas-cache-v2/bin/"$binary" --version
 done
 "$py" tests/qualification/probe.py verify

@@ -24,8 +24,8 @@ jobs:
       - uses: actions/download-artifact@v7
         with:
           github-token: ${{ github.token }}
-          run-id: 46129534676
-          artifact-ids: '15257411186'
+          run-id: 46130980298
+          artifact-ids: '15257670944'
           path: dist
       - uses: actions/download-artifact@v7
         with:
