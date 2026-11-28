@@ -83,7 +83,7 @@ WS 恢复上界取从中断前最后一次成功探针开始到故障后首次�
 | 安装程序返回 137 后系统重启，恢复 V1 服务、密码和生效配置 | PASS | PASS |
 
 - [两台来宾机完整回归](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46122474098) · [24.04 原始证据](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46122474098/artifacts/15254183793) · [26.04 原始证据](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46122474098/artifacts/15253863613)
-- [同一 HEAD 的标准 V2 verification](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46122474079)
+- 同一 HEAD 的标准 V2 verification **8/8 PASS**，包括 Ubuntu 24.04 和 26.04 两个实际安装任务。 [CI 完整结果](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46122474079)
 - 原候选包和独立修复包均在 Ubuntu 24.04 原生 arm64 VM 通过在线全生命周期、管理、浏览器和失败回归。来宾机真实重启矩阵为 amd64。 [独立修复包的原生 arm64 证据](https://github.com/yikkrrtykj/nginx-overseas-cache/actions/runs/46123112839/artifacts/15255005696)
 
 ## 验收结论与现场手册
