@@ -49,7 +49,7 @@ for bin in overseas-admin ws-fanout config-helper; do
     "$fix/bin/$bin" --version
 done
 cp -a "$fix" "$trial"
-sed -i '0,/^server {/s//server {\n    location = /__qualification_trial { return 200 "qualification-uncommitted"; }/' "$trial/nginx/sites-available/overseas-cache"
+sed -i '0,/^server {/s|^server {|server {\n    location = /__qualification_trial { return 200 "qualification-uncommitted"; }|' "$trial/nginx/sites-available/overseas-cache"
 
 cat > "$hook/dispatch" <<'HOOK'
 #!/usr/bin/env bash

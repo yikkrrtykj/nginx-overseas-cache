@@ -62,7 +62,7 @@ qemu-system-x86_64 -machine q35,accel="$accel" -cpu "$cpu" -smp 2 -m 2304 -displ
     -drive if=pflash,format=raw,file=vars.fd \
     -drive file=lab.qcow2,format=qcow2,if=virtio -drive file=seed.iso,format=raw,media=cdrom \
     -device virtio-net-pci,netdev=net0 -netdev user,id=net0,hostfwd=tcp:127.0.0.1:24231-:22 \
-    -serial file:serial.log -monitor none > qemu.log 2>&1 &
+    -serial file:serial.log -monitor none -qmp "unix:$tmp/qmp,server=on,wait=off" > qemu.log 2>&1 &
 pid=$!
 opts=(-i "$tmp/guest-key" -o BatchMode=yes -o ConnectTimeout=3 -o ServerAliveInterval=3 -o ServerAliveCountMax=5 -o UserKnownHostsFile="$tmp/known_hosts" -o StrictHostKeyChecking=accept-new)
 guest() { ssh "${opts[@]}" -p 24231 qualification@127.0.0.1 "$@"; }
@@ -95,9 +95,10 @@ cp "$root/tests/qualification/boot-guest.sh" guest.sh
 cp "$root/tests/origin_fixture.py" origin.py
 scp "${opts[@]}" -P 24231 v1.tar v2.tar.gz guest.sh origin.py qualification@127.0.0.1:
 run() {
-    printf 'Guest %s stage %s\n' "$release" "$1"
+    local label=${2:-$1}
+    printf 'Guest %s stage %s\n' "$release" "$label"
     timeout --kill-after=8s 150s ssh "${opts[@]}" -p 24231 qualification@127.0.0.1 \
-        "sudo bash /home/qualification/guest.sh $1" 2>&1 | tee "$ev/$1.log"
+        "sudo bash /home/qualification/guest.sh $1" 2>&1 | tee "$ev/$label.log"
 }
 run provision
 reboot_guest
@@ -109,13 +110,37 @@ run pending-config
 reboot_guest
 run check-pending-config
 run interrupt-install
-run interrupt-recovery
-reboot_guest
-run check-interrupt
+run pause-recovery
+python3 - "$tmp/qmp" <<'QMP'
+import json
+import socket
+import sys
+
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
+    peer.settimeout(8)
+    peer.connect(sys.argv[1])
+    with peer.makefile("rb") as replies:
+        if "QMP" not in json.loads(replies.readline()):
+            raise RuntimeError("invalid QMP greeting")
+        for command in ("qmp_capabilities", "system_reset"):
+            peer.sendall((json.dumps({"execute": command}) + "\r\n").encode())
+            for line in replies:
+                reply = json.loads(line)
+                if "event" in reply:
+                    continue
+                if "return" not in reply:
+                    raise RuntimeError("QMP command failed: " + command)
+                break
+            else:
+                raise RuntimeError("QMP ended before replying")
+print("Hard reset confirmed while the guest held the restoration lock")
+QMP
+wait_boot
+run check-interrupt after-reset-during-recovery
 run committed-rollback
 reboot_guest
-run check-interrupt
+run check-interrupt after-rollback-reboot
 run committed-uninstall
 reboot_guest
-run check-interrupt
+run check-interrupt after-uninstall-reboot
 [[ ${normal_failed:-0} == 0 ]]

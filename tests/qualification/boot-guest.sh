@@ -197,26 +197,29 @@ EOF
     systemctl show -p ExecStart overseas-cache-admin | grep -q nginx-overseas-cache-admin/server.py
     grep -q /opt/overseas-cache-v2/bin/overseas-admin /etc/systemd/system/overseas-cache-admin.service
     ;;
-interrupt-recovery)
+pause-recovery)
     mkdir -p recovery-hook
     cat > recovery-hook/cp <<'RECOVER'
 #!/usr/bin/env bash
+set -eu
 /usr/bin/cp "$@"
 if [[ ${!#} == /etc/nginx/conf.d/proxy-cache.conf ]]; then
     sync
-    kill -KILL "$PPID"
-    exit 137
+    touch /run/qual-recovery-paused
+    exec sleep 600
 fi
 RECOVER
     chmod +x recovery-hook/cp
-    code=0
-    if PATH=/home/qualification/recovery-hook:$PATH product_install recover; then
-        echo 'Recovery unexpectedly completed'
-    else
-        code=$?
-    fi
-    [[ $code == 137 && -s $history/pending-install ]]
-    echo 'Interrupted an actual restoration after its first copy, while the journal remained'
+    systemd-run --unit=qual-paused-recovery --setenv="PATH=/home/qualification/recovery-hook:$PATH" \
+        /bin/bash "$package/scripts/install-admin.sh" recover
+    for _ in {1..100}; do
+        [[ ! -e /run/qual-recovery-paused ]] || break
+        sleep 0.1
+    done
+    [[ -e /run/qual-recovery-paused && -s $history/pending-install ]]
+    systemctl is-active --quiet qual-paused-recovery
+    if flock -n "$history/install.lock" true; then exit 1; fi
+    echo 'Actual restoration paused after its first copy with journal and flock still held'
     ;;
 committed-rollback)
     product_install
