@@ -2,7 +2,8 @@
 set -Eeuo pipefail
 [[ $EUID == 0 ]]
 cd /home/qualification
-trap 'line=$LINENO; printf "Guest %s failed near line %s\n" "$1" "$line"; journalctl -n 22 -u nginx -u qual-boot-origin -u ws-fanout -u overseas-cache-admin --no-pager; exit 1' ERR
+action=$1
+trap 'line=$LINENO; printf "Guest %s failed near line %s\n" "$action" "$line"; journalctl -n 22 -u nginx -u qual-boot-origin -u ws-fanout -u overseas-cache-admin --no-pager; exit 1' ERR
 config=/etc/nginx/overseas-cache
 history=/var/lib/overseas-cache-installer
 password_file=/home/qualification/lab-password
@@ -110,6 +111,10 @@ check-pending-config)
     fi
     if [[ -f $config/backups/pending ]]; then
         /opt/overseas-cache-v2/bin/config-helper --recover
+        for _ in {1..12}; do
+            if [[ $(target_channel) == qualification-boot ]]; then break; fi
+            sleep 0.25
+        done
         [[ $(target_channel) == qualification-boot ]]
         echo 'PASS explicit helper recovery restored the prior active config'
     fi
