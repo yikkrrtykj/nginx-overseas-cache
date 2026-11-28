@@ -17,7 +17,7 @@ printf '::add-mask::%s\n::add-mask::%s\n' "$test_password" "$test_token"
 date -u --iso-8601=seconds
 cat /etc/os-release
 uname -a
-systemd --version | head -n 1
+systemctl --version | head -n 1
 printf 'workflow %s\n' "$(git rev-parse HEAD)"
 git rev-parse 8eaeb2aa8d8b6552fc5abe7aaf04581678814a88^{tree} | tee "$ev/tree.txt"
 grep -qx 23e87b4542caf050dfd2fe4dc64049485983bf89 "$ev/tree.txt"
@@ -52,7 +52,7 @@ cleanup() {
     for job in $(jobs -pr); do kill "$job" 2>/dev/null || true; done
     capture end || true
     journalctl -u nginx -u ws-fanout -u overseas-cache-admin -u overseas-cache-config -u qual-origin --no-pager -o short-iso \
-        | sed -e "s/$test_token/[REDACTED]/g" -e "s/$test_password/[REDACTED]/g" -E 's/lab-(ws|timing)-[0-9a-f]{32}/[REDACTED-WS]/g' > "$ev/journal.log"
+        | sed -e "s/$test_token/[REDACTED]/g" -e "s/$test_password/[REDACTED]/g" -E -e 's/lab-(ws|timing)-[0-9a-f]{32}/[REDACTED-WS]/g' > "$ev/journal.log"
     for net in qual-mgmt qual-biz qual-deny; do ip netns delete "$net" 2>/dev/null || true; done
     status=$rc
     if [[ -e $ev/leak-detected ]]; then status=1; fi
@@ -104,6 +104,8 @@ py=$tmp/python/bin/python
 "$py" -m pip install -r "$tmp/v1/ws-fanout/requirements.txt"
 systemd-run --unit qual-origin "$py" "$root/tests/qualification/origin.py" "$tmp/tls/origin.crt" "$tmp/tls/origin.key"
 systemctl enable --now nginx
+install -d -m 0750 -o root -g www-data /var/cache/nginx
+install -d -m 0750 -o www-data -g www-data "$cache"
 mkdir -p "$config"
 printf 'OVERSEAS_ADMIN_ALLOWED_NETWORKS=10.84.71.0/24\n' > "$config/admin.env"
 printf '%s' "$test_password" | python3 "$tmp/v1/admin/server.py" --init-password-file "$config/admin-password.json"
