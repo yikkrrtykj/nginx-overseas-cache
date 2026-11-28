@@ -10,7 +10,7 @@ async function main() {
     await page.goto(base + '/login');
     await page.locator('#username').fill('admin');
     await page.locator('#password').fill(process.env.QUAL_PASSWORD);
-    const login = page.waitForResponse(response => response.url() === base + '/api/login');
+    const login = page.waitForResponse(response => response.url() === base + (version === 'v1' ? '/api/login' : '/api/v2/login'));
     await page.locator('#password').press('Enter');
     assert.equal((await login).status(), 200);
     await page.waitForURL(base + '/');

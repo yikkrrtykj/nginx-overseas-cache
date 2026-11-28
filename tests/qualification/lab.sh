@@ -279,12 +279,14 @@ sleep 1
 [[ $(http_code mgmt "$secure/" "${tls[@]}") == 000 ]]
 [[ $(http_code mgmt http://10.84.71.1:23000/) == 000 ]]
 mv /etc/qualification-tls/admin.key.good /etc/qualification-tls/admin.key
+systemctl reset-failed overseas-cache-admin
 chmod 0600 /etc/qualification-tls/admin.key
 systemctl restart overseas-cache-admin || true
 sleep 1
 [[ $(http_code mgmt "$secure/" "${tls[@]}") == 000 ]]
 [[ $(http_code mgmt http://10.84.71.1:23000/) == 000 ]]
 chmod 0640 /etc/qualification-tls/admin.key
+systemctl reset-failed overseas-cache-admin
 systemctl restart overseas-cache-admin ws-fanout nginx
 login mgmt "$secure" "$tmp/cookies" "${tls[@]}"
 "$py" tests/qualification/probe.py verify
@@ -354,7 +356,8 @@ echo 'PASS rollback to V1 credentials, ACL, cache, and WS; second upgrade and re
 
 healthy() {
     nginx -t -q
-    systemctl is-active --quiet nginx ws-fanout overseas-cache-admin overseas-cache-config.socket
+    local unit
+    for unit in nginx ws-fanout overseas-cache-admin overseas-cache-config.socket; do systemctl is-active --quiet "$unit"; done
     login host http://127.0.0.1:23000 "$tmp/cookies"
     cmp "$tmp/v1-settings" "$config/settings.conf"
     cmp "$tmp/v1-password" "$state/admin-password.json"
