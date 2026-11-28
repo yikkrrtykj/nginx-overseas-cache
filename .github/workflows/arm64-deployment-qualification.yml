@@ -1,0 +1,49 @@
+name: Native arm64 qualification for the recovery Draft package
+on:
+  push:
+    branches: [codex/preproduction-recovery-arm64]
+    paths:
+      - '.github/workflows/deployment-qualification.yml'
+      - 'tests/qualification/**'
+permissions:
+  contents: read
+  actions: read
+jobs:
+  qualification:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 28
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/download-artifact@v7
+        with:
+          github-token: ${{ github.token }}
+          run-id: 46122474079
+          name: linux-release
+          path: dist
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y nginx python3-venv openssh-server
+          npm --prefix web ci --ignore-scripts
+          if command -v google-chrome >/dev/null && [[ "$(uname -m)" == x86_64 ]]; then
+            echo "QUAL_BROWSER_EXECUTABLE=$(command -v google-chrome)" >> "$GITHUB_ENV"
+          else
+            node web/node_modules/playwright-core/cli.js install --with-deps chromium
+          fi
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/qualification-chromium
+      - run: sudo --preserve-env=RUNNER_ENVIRONMENT,GITHUB_ACTIONS,PLAYWRIGHT_BROWSERS_PATH,QUAL_BROWSER_EXECUTABLE bash tests/qualification/lab.sh
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/qualification-chromium
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: qualification-${{ matrix.os }}
+          path: artifacts/qualification/
+          if-no-files-found: error
